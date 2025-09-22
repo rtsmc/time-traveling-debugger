@@ -599,6 +599,273 @@ class AlgorithmTester:
         }
 
 
+class InputTester:
+    """Class for testing various input scenarios."""
+    
+    def __init__(self):
+        self.input_history = []
+        self.validation_errors = []
+    
+    def get_user_name(self) -> str:
+        """Get user name with validation."""
+        while True:
+            try:
+                name = input("Enter your name: ").strip()
+                if not name:
+                    print("Name cannot be empty. Please try again.")
+                    continue
+                if len(name) < 2:
+                    print("Name must be at least 2 characters long.")
+                    continue
+                if not name.replace(' ', '').isalpha():
+                    print("Name can only contain letters and spaces.")
+                    continue
+                
+                self.input_history.append(f"name: {name}")
+                return name
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return ""
+            except Exception as e:
+                error_msg = f"Input error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def get_user_age(self) -> int:
+        """Get user age with validation."""
+        while True:
+            try:
+                age_input = input("Enter your age (1-150): ").strip()
+                
+                if not age_input:
+                    print("Age cannot be empty.")
+                    continue
+                
+                age = int(age_input)
+                
+                if age < 1 or age > 150:
+                    print("Age must be between 1 and 150.")
+                    continue
+                
+                self.input_history.append(f"age: {age}")
+                return age
+                
+            except ValueError:
+                print("Please enter a valid number.")
+                continue
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return 0
+            except Exception as e:
+                error_msg = f"Age input error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def get_menu_choice(self, options: List[str]) -> int:
+        """Display menu and get user choice."""
+        while True:
+            try:
+                print("\nMenu Options:")
+                for i, option in enumerate(options, 1):
+                    print(f"{i}. {option}")
+                print("0. Exit")
+                
+                choice_input = input(f"Choose option (0-{len(options)}): ").strip()
+                
+                if not choice_input:
+                    print("Please enter a choice.")
+                    continue
+                
+                choice = int(choice_input)
+                
+                if choice < 0 or choice > len(options):
+                    print(f"Choice must be between 0 and {len(options)}.")
+                    continue
+                
+                self.input_history.append(f"menu_choice: {choice}")
+                return choice
+                
+            except ValueError:
+                print("Please enter a valid number.")
+                continue
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return 0
+            except Exception as e:
+                error_msg = f"Menu choice error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def get_yes_no_input(self, prompt: str) -> bool:
+        """Get yes/no input from user."""
+        while True:
+            try:
+                response = input(f"{prompt} (y/n): ").strip().lower()
+                
+                if response in ['y', 'yes', '1', 'true']:
+                    self.input_history.append(f"yes_no: True ({response})")
+                    return True
+                elif response in ['n', 'no', '0', 'false']:
+                    self.input_history.append(f"yes_no: False ({response})")
+                    return False
+                else:
+                    print("Please enter 'y' for yes or 'n' for no.")
+                    continue
+                    
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return False
+            except Exception as e:
+                error_msg = f"Yes/No input error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def get_number_list(self, prompt: str = "Enter numbers separated by commas") -> List[float]:
+        """Get a list of numbers from user input."""
+        while True:
+            try:
+                numbers_input = input(f"{prompt}: ").strip()
+                
+                if not numbers_input:
+                    print("Please enter at least one number.")
+                    continue
+                
+                # Split by comma and convert to numbers
+                number_strings = [s.strip() for s in numbers_input.split(',')]
+                numbers = []
+                
+                for num_str in number_strings:
+                    if not num_str:
+                        continue
+                    numbers.append(float(num_str))
+                
+                if not numbers:
+                    print("No valid numbers found. Please try again.")
+                    continue
+                
+                self.input_history.append(f"number_list: {numbers}")
+                return numbers
+                
+            except ValueError as e:
+                print(f"Invalid number format: {str(e)}")
+                continue
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return []
+            except Exception as e:
+                error_msg = f"Number list input error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def get_password_input(self, min_length: int = 6) -> str:
+        """Get password with basic validation (visible for debugging)."""
+        import getpass
+        
+        while True:
+            try:
+                # For debugging purposes, we'll use regular input instead of getpass
+                # In real applications, use: password = getpass.getpass("Enter password: ")
+                password = input(f"Enter password (min {min_length} characters): ")
+                
+                if len(password) < min_length:
+                    print(f"Password must be at least {min_length} characters long.")
+                    continue
+                
+                # Basic password strength check
+                has_upper = any(c.isupper() for c in password)
+                has_lower = any(c.islower() for c in password)
+                has_digit = any(c.isdigit() for c in password)
+                
+                strength_score = sum([has_upper, has_lower, has_digit])
+                
+                if strength_score < 2:
+                    print("Password should contain uppercase, lowercase, and numbers.")
+                    continue_anyway = self.get_yes_no_input("Use this password anyway?")
+                    if not continue_anyway:
+                        continue
+                
+                self.input_history.append(f"password: [HIDDEN] (length: {len(password)})")
+                return password
+                
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return ""
+            except Exception as e:
+                error_msg = f"Password input error: {str(e)}"
+                self.validation_errors.append(error_msg)
+                print(error_msg)
+    
+    def interactive_calculator(self):
+        """Interactive calculator using input."""
+        print("\n=== Interactive Calculator ===")
+        print("Enter mathematical expressions (type 'quit' to exit)")
+        
+        while True:
+            try:
+                expression = input("Calculate> ").strip()
+                
+                if expression.lower() in ['quit', 'exit', 'q']:
+                    break
+                
+                if not expression:
+                    continue
+                
+                # Simple expression evaluation (be careful with eval in real apps!)
+                # Only allow safe characters
+                allowed_chars = set('0123456789+-*/.() ')
+                if not all(c in allowed_chars for c in expression):
+                    print("Only basic math operations are allowed (+, -, *, /, parentheses)")
+                    continue
+                
+                result = eval(expression)  # Note: eval is dangerous in production!
+                print(f"Result: {result}")
+                
+                self.input_history.append(f"calculator: {expression} = {result}")
+                
+            except ZeroDivisionError:
+                print("Error: Division by zero!")
+            except SyntaxError:
+                print("Error: Invalid mathematical expression!")
+            except Exception as e:
+                print(f"Error: {str(e)}")
+            except KeyboardInterrupt:
+                print("\nCalculator closed.")
+                break
+    
+    def multi_line_input_test(self) -> str:
+        """Test multi-line input."""
+        print("\nEnter multiple lines of text (type 'END' on a line by itself to finish):")
+        lines = []
+        
+        try:
+            while True:
+                line = input()
+                if line.strip().upper() == 'END':
+                    break
+                lines.append(line)
+            
+            result = '\n'.join(lines)
+            self.input_history.append(f"multiline: {len(lines)} lines")
+            return result
+            
+        except KeyboardInterrupt:
+            print("\nMulti-line input cancelled.")
+            return '\n'.join(lines)
+    
+    def get_input_history(self) -> List[str]:
+        """Return input history."""
+        return self.input_history.copy()
+    
+    def get_validation_errors(self) -> List[str]:
+        """Return validation errors."""
+        return self.validation_errors.copy()
+    
+    def clear_history(self):
+        """Clear input history."""
+        self.input_history.clear()
+        self.validation_errors.clear()
+
+
 class FileProcessor:
     """Class for file processing operations."""
     
@@ -1059,6 +1326,55 @@ def main():
         
     except Exception as e:
         print(f"Context manager error: {e}")
+    
+    # Test input functionality
+    print("\n=== Testing Input Functionality ===")
+    input_tester = InputTester()
+    
+    try:
+        # Test if we should run interactive tests
+        run_interactive = input_tester.get_yes_no_input("Run interactive input tests? (This will require user input)")
+        
+        if run_interactive:
+            # Get user information
+            user_name = input_tester.get_user_name()
+            if user_name:
+                user_age = input_tester.get_user_age()
+                
+                print(f"Hello {user_name}, age {user_age}!")
+                
+                # Menu test
+                menu_options = ["Run math operations", "Process data", "String operations", "Algorithm tests"]
+                choice = input_tester.get_menu_choice(menu_options)
+                
+                if choice > 0:
+                    print(f"You selected: {menu_options[choice-1]}")
+                    
+                    # Number list test
+                    if input_tester.get_yes_no_input("Enter a list of numbers to process?"):
+                        numbers = input_tester.get_number_list("Enter numbers for processing")
+                        if numbers:
+                            processed_numbers = [x * 2 for x in numbers]
+                            print(f"Your numbers doubled: {processed_numbers}")
+                
+                # Calculator test
+                if input_tester.get_yes_no_input("Try the interactive calculator?"):
+                    input_tester.interactive_calculator()
+                
+                # Multi-line input test
+                if input_tester.get_yes_no_input("Test multi-line input?"):
+                    multiline_text = input_tester.multi_line_input_test()
+                    print(f"You entered {len(multiline_text.split())} words in your text.")
+        
+        # Display input history
+        history = input_tester.get_input_history()
+        errors = input_tester.get_validation_errors()
+        
+        print(f"Input history: {len(history)} entries")
+        print(f"Validation errors: {len(errors)} errors")
+        
+    except Exception as e:
+        print(f"Input testing error: {e}")
     
     # Test threading (commented out to avoid complexity in debugging)
     print("\n=== Testing Threading (Basic) ===")
