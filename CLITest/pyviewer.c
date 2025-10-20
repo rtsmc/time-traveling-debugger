@@ -59,6 +59,20 @@ void print_current_line(FileViewer *viewer) {
     }
 }
 
+// Print the entire file with line numbers, highlighting the current line
+void print_full_file(FileViewer *viewer) {
+    printf("\n--- Full File View ---\n");
+    for (int i = 0; i < viewer->line_count; i++) {
+        if (i == viewer->current_line) {
+            // Highlight current line with ANSI color codes (green background)
+            printf("\033[42m\033[30m>>> [Line %d] %s\033[0m\n", i + 1, viewer->lines[i]);
+        } else {
+            printf("    [Line %d] %s\n", i + 1, viewer->lines[i]);
+        }
+    }
+    printf("--- End of File ---\n\n");
+}
+
 // Free allocated memory
 void cleanup(FileViewer *viewer) {
     for (int i = 0; i < viewer->line_count; i++) {
@@ -96,7 +110,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Python File Viewer - Loaded %d lines\n", viewer.line_count);
-    printf("Commands: 'n' (next), 'back' (previous), ':<number>' (goto line)\n");
+    printf("Commands: 'n' (next), 'back' (previous), ':<number>' (goto line), 'full' (show entire file)\n");
     printf("---\n");
 
     // Print first line
@@ -142,6 +156,11 @@ int main(int argc, char *argv[]) {
                 printf("Already at first line\n");
             }
         }
+        // Handle 'full' command
+        else if (strcmp(cmd, "full") == 0) {
+            print_full_file(&viewer);
+            printf("Currently at line %d\n", viewer.current_line + 1);
+        }
         // Handle ':<number>' command
         else if (cmd[0] == ':') {
             int line_num = atoi(cmd + 1);
@@ -157,7 +176,7 @@ int main(int argc, char *argv[]) {
             break;
         }
         else {
-            printf("Unknown command. Use 'n', 'back', ':<number>', or 'quit'\n");
+            printf("Unknown command. Use 'n', 'back', ':<number>', 'full', or 'quit'\n");
         }
     }
 
