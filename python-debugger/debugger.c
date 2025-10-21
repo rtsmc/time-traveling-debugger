@@ -17,11 +17,9 @@ static void
 write_variables(FILE *fp, PyObject *locals)
 {
     if (locals == NULL || !PyDict_Check(locals)) {
-        fprintf(fp, "|||");
+        // No variables - write nothing
         return;
     }
-
-    fprintf(fp, "|||");
     
     PyObject *key, *value;
     Py_ssize_t pos = 0;
@@ -47,7 +45,7 @@ write_variables(FILE *fp, PyObject *locals)
             var_value = PyUnicode_AsUTF8(repr);
             if (var_value == NULL) {
                 PyErr_Clear();
-                var_value = "<error>";
+                var_value = "<e>";
             }
         }
         
@@ -146,10 +144,10 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     }
     
     // Write trace entry: execution_order|||filename|||line_number|||code|||variables
-    fprintf(trace_file, "%ld|||%s|||%d|||%s",
+    fprintf(trace_file, "%ld|||%s|||%d|||%s|||",
             execution_counter++, filename, lineno, source_line);
     
-    // Write variables
+    // Write variables (no extra ||| needed)
     write_variables(trace_file, locals);
     fprintf(trace_file, "\n");
     fflush(trace_file);
