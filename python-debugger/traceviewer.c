@@ -24,60 +24,57 @@ typedef struct {
 // Parse a trace line into a TraceEntry
 int parse_trace_line(char *line, TraceEntry *entry) {
     // Format: EXECUTION_ORDER|||FILENAME|||LINE_NUMBER|||CODE|||VARIABLES
-    char *token;
     char line_copy[MAX_LINE_LENGTH];
     strncpy(line_copy, line, MAX_LINE_LENGTH - 1);
     line_copy[MAX_LINE_LENGTH - 1] = '\0';
     
-    // Parse execution order
-    token = strtok(line_copy, "|");
-    if (!token) return 0;
+    // Split by ||| delimiter
+    char *parts[5] = {NULL};
+    int part_count = 0;
+    char *ptr = line_copy;
+    char *start = ptr;
     
-    // Skip the ||| separator (strtok will return empty strings)
-    while (token && strlen(token) == 0) {
-        token = strtok(NULL, "|");
+    while (*ptr && part_count < 5) {
+        if (ptr[0] == '|' && ptr[1] == '|' && ptr[2] == '|') {
+            // Found delimiter
+            *ptr = '\0';
+            parts[part_count++] = start;
+            ptr += 3;  // Skip |||
+            start = ptr;
+        } else {
+            ptr++;
+        }
     }
-    if (!token) return 0;
-    entry->exec_order = atol(token);
+    // Get last part (or rest of string)
+    if (part_count < 5) {
+        parts[part_count++] = start;
+    }
+    
+    // Must have at least 4 parts (order, file, line, code)
+    if (part_count < 4) {
+        return 0;
+    }
+    
+    // Parse execution order
+    entry->exec_order = atol(parts[0]);
     
     // Parse filename
-    token = strtok(NULL, "|");
-    while (token && strlen(token) == 0) {
-        token = strtok(NULL, "|");
-    }
-    if (!token) return 0;
-    strncpy(entry->filename, token, sizeof(entry->filename) - 1);
+    strncpy(entry->filename, parts[1], sizeof(entry->filename) - 1);
     entry->filename[sizeof(entry->filename) - 1] = '\0';
     
     // Parse line number
-    token = strtok(NULL, "|");
-    while (token && strlen(token) == 0) {
-        token = strtok(NULL, "|");
-    }
-    if (!token) return 0;
-    entry->line_number = atoi(token);
+    entry->line_number = atoi(parts[2]);
     
     // Parse code
-    token = strtok(NULL, "|");
-    while (token && strlen(token) == 0) {
-        token = strtok(NULL, "|");
-    }
-    if (!token) {
-        entry->code[0] = '\0';
-    } else {
-        strncpy(entry->code, token, sizeof(entry->code) - 1);
-        entry->code[sizeof(entry->code) - 1] = '\0';
-    }
+    strncpy(entry->code, parts[3], sizeof(entry->code) - 1);
+    entry->code[sizeof(entry->code) - 1] = '\0';
     
-    // Parse variables (rest of the line)
-    token = strtok(NULL, "");
-    if (!token) {
-        entry->variables[0] = '\0';
-    } else {
-        // Skip leading |||
-        while (*token == '|') token++;
-        strncpy(entry->variables, token, sizeof(entry->variables) - 1);
+    // Parse variables (5th part, may be empty)
+    if (part_count >= 5 && parts[4] && strlen(parts[4]) > 0) {
+        strncpy(entry->variables, parts[4], sizeof(entry->variables) - 1);
         entry->variables[sizeof(entry->variables) - 1] = '\0';
+    } else {
+        entry->variables[0] = '\0';
     }
     
     return 1;
@@ -230,6 +227,55 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
     }
 }
 
+// View full source file with current line highlighted
+void view_file(TraceViewer *viewer) {
+    if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
+        printf("No current entry\n");
+        return;
+    }
+    
+    TraceEntry *current = &viewer->entries[viewer->current_entry];
+    const char *filename = current->filename;
+    int highlight_line = current->line_number;
+    
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", filename);
+        return;
+    }
+    
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mFile: %s\033[0m\n", filename);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+    
+    char line[MAX_LINE_LENGTH];
+    int line_num = 1;
+    
+    while (fgets(line, sizeof(line), file)) {
+        // Remove trailing newline
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
+        
+        if (line_num == highlight_line) {
+            // Highlight current line (green background)
+            printf("\033[42m\033[30m>>> [Line %3d] %s\033[0m\n", line_num, line);
+        } else {
+            // Normal line
+            printf("    [Line %3d] %s\n", line_num, line);
+        }
+        
+        line_num++;
+    }
+    
+    fclose(file);
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("Currently at: \033[1;32m[Execution #%ld]\033[0m Line %d\n", 
+           current->exec_order, highlight_line);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+}
+
 // Free allocated memory
 void cleanup(TraceViewer *viewer) {
     free(viewer->entries);
@@ -243,6 +289,7 @@ void print_help() {
     printf("  \033[1;32mn\033[0m              - Next execution step\n");
     printf("  \033[1;32mback\033[0m           - Previous execution step\n");
     printf("  \033[1;32m:<number>\033[0m      - Jump to execution number (e.g., :100)\n");
+    printf("  \033[1;32mview\033[0m           - View full source file with current line highlighted\n");
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
     printf("  \033[1;32mjump <line>\033[0m   - Jump to specific source line\n");
@@ -325,6 +372,10 @@ int main(int argc, char *argv[]) {
         // Handle 'summary' command
         else if (strcmp(cmd, "summary") == 0) {
             print_summary(&viewer);
+        }
+        // Handle 'view' command
+        else if (strcmp(cmd, "view") == 0) {
+            view_file(&viewer);
         }
         // Handle 'help' command
         else if (strcmp(cmd, "help") == 0) {
