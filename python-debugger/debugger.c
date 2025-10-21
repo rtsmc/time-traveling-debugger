@@ -111,9 +111,21 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         return 0;
     }
     
-    // Skip tracing of debugger internals and standard library
+    // Skip tracing of system files, standard library, and debugger internals
+    // Only trace files in current directory or explicit paths
     if (strstr(filename, "site-packages") != NULL ||
-        strstr(filename, "cdebugger") != NULL) {
+        strstr(filename, "/usr/lib") != NULL ||
+        strstr(filename, "/usr/local/lib") != NULL ||
+        strstr(filename, "python3.") != NULL ||
+        strstr(filename, "<frozen") != NULL ||
+        strstr(filename, "importlib") != NULL ||
+        strstr(filename, "cdebugger") != NULL ||
+        strstr(filename, "runner.py") != NULL) {
+        return 0;
+    }
+    
+    // Also skip if the file doesn't exist in filesystem (built-in modules)
+    if (filename[0] == '<') {
         return 0;
     }
     
@@ -121,6 +133,11 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     char *source_line = get_source_line(filename, lineno);
     
     // Get local variables (compatible with Python 3.7+)
+    // This captures ALL local variables in the current scope:
+    // - Function arguments
+    // - Local variables
+    // - Loop variables
+    // - Any variable in the local namespace
     PyObject *locals = frame->f_locals;
     if (locals == NULL) {
         locals = PyDict_New();
