@@ -1,0 +1,10 @@
+python3 setup.py build_ext --inplace
+
+gcc -o traceviewer traceviewer.c -Wall -O2
+
+python3 runner.py test.py
+
+python3 runner.py test_crash.py
+
+python3 runner.py test_variables.py
+
