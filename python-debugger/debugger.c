@@ -120,9 +120,13 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     // Get the source line
     char *source_line = get_source_line(filename, lineno);
     
-    // Get local variables
-    PyObject *locals = PyFrame_GetLocals(frame);
-    
+    // Get local variables (compatible with Python 3.7+)
+    PyObject *locals = frame->f_locals;
+    if (locals == NULL) {
+       locals = PyDict_New();
+    } else {
+        Py_INCREF(locals);
+    } 
     // Write trace entry: execution_order|||filename|||line_number|||code|||variables
     fprintf(trace_file, "%ld|||%s|||%d|||%s",
             execution_counter++, filename, lineno, source_line);
