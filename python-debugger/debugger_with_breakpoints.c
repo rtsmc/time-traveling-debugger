@@ -24,6 +24,64 @@ static int step_mode = 0;   // 0=continue, 1=step_next, 2=step_into
 static char *trace_filename = NULL;
 static Breakpoint *breakpoints = NULL;
 
+// Trace history for step back
+#define MAX_TRACE_HISTORY 1000
+typedef struct TraceEntry {
+    char *filename;
+    int lineno;
+    char *code;
+    char *variables;
+    long exec_num;
+} TraceEntry;
+
+static TraceEntry trace_history[MAX_TRACE_HISTORY];
+static int trace_history_count = 0;
+static int trace_history_index = 0;
+
+// Helper function to add entry to trace history
+static void add_trace_entry(const char *filename, int lineno, const char *code, const char *variables) {
+    if (trace_history_count < MAX_TRACE_HISTORY) {
+        TraceEntry *entry = &trace_history[trace_history_count];
+        entry->filename = strdup(filename);
+        entry->lineno = lineno;
+        entry->code = strdup(code);
+        entry->variables = strdup(variables ? variables : "");
+        entry->exec_num = execution_counter - 1;
+        trace_history_count++;
+        trace_history_index = trace_history_count;
+    }
+}
+
+// Helper function to show trace entry
+static void show_trace_entry(int index) {
+    if (index < 0 || index >= trace_history_count) {
+        return;
+    }
+    
+    TraceEntry *entry = &trace_history[index];
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;35m⟲ TRACE HISTORY [%d/%d]\033[0m\n", index + 1, trace_history_count);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("Execution: \033[1;32m#%ld\033[0m\n", entry->exec_num);
+    printf("File: \033[1;32m%s\033[0m Line: \033[1;32m%d\033[0m\n", entry->filename, entry->lineno);
+    printf("Code: %s\n", entry->code);
+    if (entry->variables && strlen(entry->variables) > 0) {
+        printf("Variables: %s\n", entry->variables);
+    }
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+}
+
+// Helper function to free trace history
+static void free_trace_history() {
+    for (int i = 0; i < trace_history_count; i++) {
+        free(trace_history[i].filename);
+        free(trace_history[i].code);
+        free(trace_history[i].variables);
+    }
+    trace_history_count = 0;
+    trace_history_index = 0;
+}
+
 // Helper function to add a breakpoint
 static int add_breakpoint(const char *filename, int lineno) {
     Breakpoint *bp = (Breakpoint *)malloc(sizeof(Breakpoint));
@@ -164,36 +222,74 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     
     // Check for breakpoint
     Breakpoint *bp = check_breakpoint(filename, lineno);
-    if (bp != NULL && !is_paused) {
+    if (bp != NULL) {
         is_paused = 1;
         printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
         printf("\033[1;31m⚫ BREAKPOINT HIT\033[0m\n");
         printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
         printf("File: \033[1;32m%s\033[0m Line: \033[1;32m%d\033[0m\n", filename, lineno);
         printf("Hit count: %d\n", bp->hit_count);
+        
+        // Show current code
+        char *current_code = get_source_line(filename, lineno);
+        printf("Code: %s\n", current_code);
+        free(current_code);
+        
         printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
         printf("\nCommands:\n");
         printf("  \033[1;32mc\033[0m - Continue to next breakpoint\n");
         printf("  \033[1;32mn\033[0m - Step to next line\n");
+        printf("  \033[1;32mb\033[0m - Step back to previous line\n");
+        printf("  \033[1;32mh\033[0m - Show trace history\n");
         printf("  \033[1;32mq\033[0m - Quit execution\n");
         printf("\n> ");
         
         char input[256];
-        if (fgets(input, sizeof(input), stdin)) {
-            input[strcspn(input, "\n")] = 0;  // Remove newline
-            
-            if (strcmp(input, "c") == 0) {
-                // Continue
-                is_paused = 0;
-                step_mode = 0;
-            } else if (strcmp(input, "n") == 0) {
-                // Step next
-                is_paused = 0;
-                step_mode = 1;
-            } else if (strcmp(input, "q") == 0) {
-                // Quit
-                printf("Exiting...\n");
-                exit(0);
+        while (1) {
+            if (fgets(input, sizeof(input), stdin)) {
+                input[strcspn(input, "\n")] = 0;  // Remove newline
+                
+                if (strcmp(input, "c") == 0) {
+                    // Continue - breakpoint will hit again in loop
+                    is_paused = 0;
+                    step_mode = 0;
+                    break;
+                } else if (strcmp(input, "n") == 0) {
+                    // Step next
+                    is_paused = 0;
+                    step_mode = 1;
+                    break;
+                } else if (strcmp(input, "b") == 0) {
+                    // Step back
+                    if (trace_history_index > 1) {
+                        trace_history_index--;
+                        show_trace_entry(trace_history_index - 1);
+                        printf("\n> ");
+                    } else {
+                        printf("Already at the beginning of trace history.\n");
+                        printf("\n> ");
+                    }
+                } else if (strcmp(input, "h") == 0) {
+                    // Show history
+                    printf("\nTrace History (%d entries):\n", trace_history_count);
+                    int start = trace_history_count > 10 ? trace_history_count - 10 : 0;
+                    for (int i = start; i < trace_history_count; i++) {
+                        char marker = (i == trace_history_index - 1) ? '>' : ' ';
+                        printf("  %c [%d] #%ld %s:%d\n", 
+                               marker, i + 1, trace_history[i].exec_num,
+                               trace_history[i].filename, trace_history[i].lineno);
+                    }
+                    printf("\n> ");
+                } else if (strcmp(input, "q") == 0) {
+                    // Quit
+                    printf("Exiting...\n");
+                    exit(0);
+                } else {
+                    printf("Unknown command. Use: c, n, b, h, or q\n");
+                    printf("\n> ");
+                }
+            } else {
+                break;
             }
         }
     }
@@ -210,21 +306,52 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         printf("File: \033[1;32m%s\033[0m Line: \033[1;32m%d\033[0m\n", filename, lineno);
         printf("Code: %s\n", source_line);
         printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+        printf("\nCommands: c (continue), n (step), b (back), h (history), q (quit)\n");
         printf("\n> ");
         free(source_line);
         
         char input[256];
-        if (fgets(input, sizeof(input), stdin)) {
-            input[strcspn(input, "\n")] = 0;
-            
-            if (strcmp(input, "c") == 0) {
-                is_paused = 0;
-                step_mode = 0;
-            } else if (strcmp(input, "n") == 0) {
-                is_paused = 0;
-                step_mode = 1;
-            } else if (strcmp(input, "q") == 0) {
-                exit(0);
+        while (1) {
+            if (fgets(input, sizeof(input), stdin)) {
+                input[strcspn(input, "\n")] = 0;
+                
+                if (strcmp(input, "c") == 0) {
+                    is_paused = 0;
+                    step_mode = 0;
+                    break;
+                } else if (strcmp(input, "n") == 0) {
+                    is_paused = 0;
+                    step_mode = 1;
+                    break;
+                } else if (strcmp(input, "b") == 0) {
+                    // Step back
+                    if (trace_history_index > 1) {
+                        trace_history_index--;
+                        show_trace_entry(trace_history_index - 1);
+                        printf("\n> ");
+                    } else {
+                        printf("Already at the beginning of trace history.\n");
+                        printf("\n> ");
+                    }
+                } else if (strcmp(input, "h") == 0) {
+                    // Show history
+                    printf("\nTrace History (%d entries):\n", trace_history_count);
+                    int start = trace_history_count > 10 ? trace_history_count - 10 : 0;
+                    for (int i = start; i < trace_history_count; i++) {
+                        char marker = (i == trace_history_index - 1) ? '>' : ' ';
+                        printf("  %c [%d] #%ld %s:%d\n", 
+                               marker, i + 1, trace_history[i].exec_num,
+                               trace_history[i].filename, trace_history[i].lineno);
+                    }
+                    printf("\n> ");
+                } else if (strcmp(input, "q") == 0) {
+                    exit(0);
+                } else {
+                    printf("Unknown command. Use: c, n, b, h, or q\n");
+                    printf("\n> ");
+                }
+            } else {
+                break;
             }
         }
     }
@@ -245,6 +372,39 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     write_variables(trace_file, locals);
     fprintf(trace_file, "\n");
     fflush(trace_file);
+    
+    // Add to trace history for step back
+    // Build variables string
+    char var_buffer[4096] = {0};
+    if (locals && PyDict_Check(locals)) {
+        PyObject *key, *value;
+        Py_ssize_t pos = 0;
+        int first = 1;
+        
+        while (PyDict_Next(locals, &pos, &key, &value) && strlen(var_buffer) < 3900) {
+            if (!first) {
+                strcat(var_buffer, "; ");
+            }
+            first = 0;
+            
+            const char *var_name = PyUnicode_AsUTF8(key);
+            if (var_name) {
+                strcat(var_buffer, var_name);
+                strcat(var_buffer, "=");
+                
+                PyObject *repr = PyObject_Repr(value);
+                if (repr) {
+                    const char *var_value = PyUnicode_AsUTF8(repr);
+                    if (var_value) {
+                        strncat(var_buffer, var_value, 100);
+                    }
+                    Py_XDECREF(repr);
+                }
+            }
+        }
+    }
+    
+    add_trace_entry(filename, lineno, source_line, var_buffer);
     
     free(source_line);
     Py_XDECREF(locals);
@@ -307,6 +467,9 @@ stop_trace(PyObject *self, PyObject *args)
         free(trace_filename);
         trace_filename = NULL;
     }
+    
+    // Free trace history
+    free_trace_history();
     
     Py_RETURN_NONE;
 }
