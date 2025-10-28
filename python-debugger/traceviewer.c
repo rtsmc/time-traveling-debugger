@@ -292,7 +292,7 @@ void print_help() {
     printf("  \033[1;32mview\033[0m           - View full source file with current line highlighted\n");
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
-    printf("  \033[1;32mjump <line>\033[0m   - Jump to specific source line\n");
+    printf("  \033[1;32mbreak <line>\033[0m  - Show execution at source line (e.g., break 42)\n");
     printf("  \033[1;32mhelp\033[0m           - Show this help\n");
     printf("  \033[1;32mquit\033[0m or \033[1;32mq\033[0m     - Exit debugger\n");
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
@@ -410,9 +410,9 @@ int main(int argc, char *argv[]) {
                 printf("\033[1;31m✗ Usage: find <variable_name>\033[0m\n");
             }
         }
-        // Handle 'jump <line>' command
-        else if (strncmp(cmd, "jump ", 5) == 0) {
-            int line_num = atoi(cmd + 5);
+        // Handle 'break <line>' command
+        else if (strncmp(cmd, "break ", 6) == 0) {
+            int line_num = atoi(cmd + 6);
             int found = 0;
             
             printf("\nSearching for line %d...\n\n", line_num);

@@ -10,6 +10,29 @@ import sys
 import os
 import cdebugger
 import traceback
+import subprocess
+
+def launch_cli(trace_file):
+    """Launch the trace viewer CLI"""
+    
+    # Check if traceviewer is compiled
+    if not os.path.exists("./traceviewer"):
+        print("\nCompiling trace viewer...")
+        result = subprocess.run(
+            ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print("Failed to compile traceviewer.")
+            print(f"Error: {result.stderr}")
+            print("\nYou can manually compile with: gcc -o traceviewer traceviewer.c -Wall")
+            print(f"Then run: ./traceviewer {trace_file}")
+            return
+    
+    # Launch the CLI
+    print("\n")
+    subprocess.run(["./traceviewer", trace_file])
 
 def run_with_trace(python_file, trace_file="trace.log"):
     """
@@ -64,32 +87,21 @@ def run_with_trace(python_file, trace_file="trace.log"):
         print(f"Launching debugger CLI...")
         
         # Launch the C-based trace viewer CLI
-        import subprocess
-        
-        # Check if traceviewer is compiled
-        if not os.path.exists("./traceviewer"):
-            print("\nCompiling trace viewer...")
-            result = subprocess.run(
-                ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                print("Failed to compile traceviewer. Using Python fallback.")
-                print("\nYou can manually compile with: gcc -o traceviewer traceviewer.c -Wall")
-                print(f"Then run: ./traceviewer {trace_file}")
-                return False
-        
-        # Launch the CLI
-        print("\n")
-        subprocess.run(["./traceviewer", trace_file])
+        launch_cli(trace_file)
         
         return False
     
-    # Normal completion
+    # Normal completion - also launch CLI
     cdebugger.stop_trace()
-    print(f"\nExecution completed successfully.")
-    print(f"Trace file saved to: {trace_file}")
+    print(f"\n{'='*60}")
+    print(f"Execution completed successfully.")
+    print(f"{'='*60}")
+    print(f"\nTrace file saved to: {trace_file}")
+    print(f"Launching debugger CLI...")
+    
+    # Launch the CLI even on success
+    launch_cli(trace_file)
+    
     return True
 
 def main():
