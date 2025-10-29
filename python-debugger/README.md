@@ -159,7 +159,7 @@ python3 idebug.py /path/to/library/module.py
 
 ## 🔧 Requirements
 
-- Python 3.7+
+- **Python 3.9 - 3.12+** (fully compatible)
 - GCC (for building C extensions)
 - Linux/macOS (Windows users: use WSL)
 

@@ -4,6 +4,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Compatibility for Python 3.9-3.10 vs 3.11+
+#if PY_VERSION_HEX < 0x030B0000
+// Python 3.9-3.10: Use direct struct access
+#define COMPAT_PyFrame_GetCode(frame) ((frame)->f_code)
+#define COMPAT_PyFrame_GetLocals(frame) ((frame)->f_locals)
+#define COMPAT_Py_XDECREF_Code(code) ((void)0)  // No-op for old API
+#else
+// Python 3.11+: Use accessor functions
+#define COMPAT_PyFrame_GetCode(frame) PyFrame_GetCode(frame)
+#define COMPAT_PyFrame_GetLocals(frame) PyFrame_GetLocals(frame)
+#define COMPAT_Py_XDECREF_Code(code) Py_XDECREF(code)
+#endif
+
 // Breakpoint structure
 typedef struct Breakpoint {
     char *filename;
@@ -198,11 +211,11 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     }
     
     // Get filename and line number
-    PyCodeObject *code = PyFrame_GetCode(frame);
+    PyCodeObject *code = COMPAT_PyFrame_GetCode(frame);
     PyObject *filename_obj = code->co_filename;
     const char *filename = PyUnicode_AsUTF8(filename_obj);
     int lineno = PyFrame_GetLineNumber(frame);
-    Py_DECREF(code);
+    COMPAT_Py_XDECREF_Code(code);
     
     if (filename == NULL) {
         PyErr_Clear();
@@ -362,7 +375,7 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     // Write to trace file
     char *source_line = get_source_line(filename, lineno);
     
-    PyObject *locals = PyFrame_GetLocals(frame);
+    PyObject *locals = COMPAT_PyFrame_GetLocals(frame);
     if (locals == NULL) {
         locals = PyDict_New();
     } else {
