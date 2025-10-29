@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Interactive Debugger CLI
-Opens BEFORE execution to set breakpoints and configure debugging
+Python Interactive Time-Traveling Debugger
+Set breakpoints interactively before execution
 """
 
 import sys
@@ -11,30 +11,42 @@ import traceback
 import subprocess
 import cmd
 
+# ANSI color codes for consistent styling
+class Colors:
+    CYAN = '\033[1;36m'
+    GREEN = '\033[1;32m'
+    YELLOW = '\033[1;33m'
+    RED = '\033[1;31m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
 class DebuggerCLI(cmd.Cmd):
-    intro = """
-╔════════════════════════════════════════════════════════╗
-║      Python Interactive Debugger - Setup Mode        ║
-╚════════════════════════════════════════════════════════╝
+    intro = f"""
+{Colors.CYAN}╔════════════════════════════════════════════════════════╗{Colors.RESET}
+{Colors.CYAN}║         Python Time-Traveling Debugger v1.0          ║{Colors.RESET}
+{Colors.CYAN}╚════════════════════════════════════════════════════════╝{Colors.RESET}
 
-Set breakpoints and configure debugging before execution.
+{Colors.YELLOW}Pre-Execution Setup Mode{Colors.RESET}
+Set breakpoints before running your program.
 
-Commands:
-  break <file> <line>  - Set a breakpoint
-  list                 - List all breakpoints
-  clear [num]          - Clear breakpoint(s)
-  show <file>          - Show file with line numbers
-  run                  - Start execution
-  help                 - Show this help
-  quit                 - Exit without running
+{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}
+{Colors.GREEN}Commands:{Colors.RESET}
+  {Colors.BOLD}break <file> <line>{Colors.RESET}  - Set a breakpoint (short: {Colors.GREEN}b{Colors.RESET})
+  {Colors.BOLD}list{Colors.RESET}                 - List all breakpoints (short: {Colors.GREEN}l{Colors.RESET})
+  {Colors.BOLD}clear [num]{Colors.RESET}          - Clear breakpoint(s)
+  {Colors.BOLD}show <file>{Colors.RESET}          - Show file with line numbers
+  {Colors.BOLD}run{Colors.RESET}                  - Start execution (short: {Colors.GREEN}r{Colors.RESET})
+  {Colors.BOLD}help{Colors.RESET}                 - Show this help
+  {Colors.BOLD}quit{Colors.RESET} or {Colors.BOLD}q{Colors.RESET}           - Exit without running
+{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}
 
-Example:
+{Colors.YELLOW}Example:{Colors.RESET}
   > break test.py 25
   > break test.py 50
   > list
   > run
 """
-    prompt = '(debugger) > '
+    prompt = f'{Colors.GREEN}>{Colors.RESET} '
     
     def __init__(self, python_file, trace_file):
         super().__init__()
@@ -48,8 +60,8 @@ Example:
         try:
             parts = arg.split()
             if len(parts) != 2:
-                print("Usage: break <file> <line>")
-                print("Example: break test.py 25")
+                print(f"{Colors.RED}Usage:{Colors.RESET} break <file> <line>")
+                print(f"{Colors.YELLOW}Example:{Colors.RESET} break test.py 25")
                 return
             
             filename = parts[0]
@@ -57,18 +69,18 @@ Example:
             
             # Check if file exists
             if not os.path.exists(filename):
-                print(f"⚠ Warning: File '{filename}' not found")
+                print(f"{Colors.RED}⚠ Warning:{Colors.RESET} File '{filename}' not found")
                 response = input("Set breakpoint anyway? (y/n): ")
                 if response.lower() != 'y':
                     return
             
             self.breakpoints.append((filename, line))
-            print(f"✓ Breakpoint set at {filename}:{line}")
+            print(f"{Colors.GREEN}✓ Breakpoint set at{Colors.RESET} {filename}:{line}")
             
         except ValueError:
-            print("Error: Line number must be an integer")
+            print(f"{Colors.RED}Error:{Colors.RESET} Line number must be an integer")
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"{Colors.RED}Error:{Colors.RESET} {e}")
     
     def do_b(self, arg):
         """Shorthand for break"""
@@ -77,15 +89,16 @@ Example:
     def do_list(self, arg):
         """List all breakpoints"""
         if not self.breakpoints:
-            print("No breakpoints set")
+            print(f"{Colors.YELLOW}No breakpoints set{Colors.RESET}")
             return
         
-        print("\nBreakpoints:")
-        print("─" * 50)
+        print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"{Colors.YELLOW}Breakpoints:{Colors.RESET}")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
         for i, (file, line) in enumerate(self.breakpoints, 1):
-            print(f"  {i}. {file}:{line}")
-        print("─" * 50)
-        print(f"Total: {len(self.breakpoints)} breakpoint(s)\n")
+            print(f"  {Colors.GREEN}{i}.{Colors.RESET} {file}:{line}")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"Total: {Colors.BOLD}{len(self.breakpoints)}{Colors.RESET} breakpoint(s)\n")
     
     def do_l(self, arg):
         """Shorthand for list"""
@@ -94,23 +107,23 @@ Example:
     def do_clear(self, arg):
         """Clear breakpoint(s): clear [num] or clear all"""
         if not self.breakpoints:
-            print("No breakpoints to clear")
+            print(f"{Colors.YELLOW}No breakpoints to clear{Colors.RESET}")
             return
         
         if not arg or arg == "all":
             self.breakpoints.clear()
-            print("✓ All breakpoints cleared")
+            print(f"{Colors.GREEN}✓ All breakpoints cleared{Colors.RESET}")
             return
         
         try:
             num = int(arg)
             if 1 <= num <= len(self.breakpoints):
                 bp = self.breakpoints.pop(num - 1)
-                print(f"✓ Cleared breakpoint at {bp[0]}:{bp[1]}")
+                print(f"{Colors.GREEN}✓ Cleared breakpoint at{Colors.RESET} {bp[0]}:{bp[1]}")
             else:
-                print(f"Error: Breakpoint {num} doesn't exist")
+                print(f"{Colors.RED}Error:{Colors.RESET} Breakpoint {num} doesn't exist")
         except ValueError:
-            print("Usage: clear [num] or clear all")
+            print(f"{Colors.RED}Usage:{Colors.RESET} clear [num] or clear all")
     
     def do_show(self, arg):
         """Show file with line numbers: show <file>"""
@@ -118,13 +131,13 @@ Example:
             arg = self.python_file
         
         if not os.path.exists(arg):
-            print(f"Error: File '{arg}' not found")
+            print(f"{Colors.RED}Error:{Colors.RESET} File '{arg}' not found")
             return
         
         try:
-            print(f"\n{'='*60}")
-            print(f"File: {arg}")
-            print('='*60)
+            print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+            print(f"{Colors.YELLOW}File: {arg}{Colors.RESET}")
+            print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}\n")
             
             with open(arg, 'r') as f:
                 lines = f.readlines()
@@ -133,29 +146,29 @@ Example:
             bp_lines = set(line for file, line in self.breakpoints if file == arg)
             
             for i, line in enumerate(lines, 1):
-                marker = "⚫" if i in bp_lines else "  "
-                print(f"{marker} {i:4d} | {line.rstrip()}")
+                marker = f"{Colors.RED}⚫{Colors.RESET}" if i in bp_lines else "  "
+                print(f"{marker} {Colors.GREEN}{i:4d}{Colors.RESET} | {line.rstrip()}")
             
-            print('='*60)
-            print(f"Total lines: {len(lines)}\n")
+            print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+            print(f"Total lines: {Colors.BOLD}{len(lines)}{Colors.RESET}\n")
             
         except Exception as e:
-            print(f"Error reading file: {e}")
+            print(f"{Colors.RED}Error reading file:{Colors.RESET} {e}")
     
     def do_run(self, arg):
         """Start execution with configured breakpoints"""
-        print("\n" + "="*60)
-        print("Starting execution...")
-        print("="*60)
+        print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"{Colors.YELLOW}Starting execution...{Colors.RESET}")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
         
         if self.breakpoints:
-            print(f"Breakpoints: {len(self.breakpoints)}")
+            print(f"Breakpoints: {Colors.BOLD}{len(self.breakpoints)}{Colors.RESET}")
             for file, line in self.breakpoints:
-                print(f"  • {file}:{line}")
+                print(f"  {Colors.GREEN}•{Colors.RESET} {file}:{line}")
         else:
-            print("No breakpoints set (will trace only)")
+            print(f"{Colors.YELLOW}No breakpoints set (will trace only){Colors.RESET}")
         
-        print("="*60 + "\n")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}\n")
         
         self.should_run = True
         return True  # Exit the CLI loop
@@ -166,7 +179,7 @@ Example:
     
     def do_quit(self, arg):
         """Exit without running"""
-        print("Exiting without execution")
+        print(f"{Colors.YELLOW}Exiting without execution{Colors.RESET}")
         self.should_run = False
         return True
     
@@ -189,17 +202,17 @@ Example:
 def launch_trace_viewer(trace_file):
     """Launch the trace viewer CLI"""
     if not os.path.exists("./traceviewer"):
-        print("\nCompiling trace viewer...")
+        print(f"\n{Colors.YELLOW}Compiling trace viewer...{Colors.RESET}")
         result = subprocess.run(
-            ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall"],
+            ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2"],
             capture_output=True,
             text=True
         )
         if result.returncode != 0:
-            print("Failed to compile traceviewer.")
+            print(f"{Colors.RED}Failed to compile traceviewer.{Colors.RESET}")
             print(f"Error: {result.stderr}")
-            print("\nYou can manually compile with: gcc -o traceviewer traceviewer.c -Wall")
-            print(f"Then run: ./traceviewer {trace_file}")
+            print(f"\nYou can manually compile with: {Colors.BOLD}gcc -o traceviewer traceviewer.c -Wall -O2{Colors.RESET}")
+            print(f"Then run: {Colors.BOLD}./traceviewer {trace_file}{Colors.RESET}")
             return
     
     print("\n")
@@ -215,17 +228,17 @@ def run_with_breakpoints(python_file, trace_file, breakpoints):
         breakpoints: List of (filename, line) tuples
     """
     
-    # Set all breakpoints
+    # Start tracing FIRST (before setting breakpoints)
+    print(f"Starting trace to: {Colors.BOLD}{trace_file}{Colors.RESET}")
+    cdebugger.start_trace(trace_file)
+    
+    # Set all breakpoints AFTER tracing starts
     for filename, line in breakpoints:
         try:
             cdebugger.set_breakpoint(filename, line)
-            print(f"✓ Breakpoint set at {filename}:{line}")
+            print(f"{Colors.GREEN}✓ Breakpoint active at{Colors.RESET} {filename}:{line}")
         except Exception as e:
-            print(f"⚠ Warning: Could not set breakpoint at {filename}:{line}: {e}")
-    
-    # Start tracing
-    print(f"\nStarting trace to: {trace_file}")
-    cdebugger.start_trace(trace_file)
+            print(f"{Colors.RED}⚠ Warning:{Colors.RESET} Could not set breakpoint at {filename}:{line}: {e}")
     
     try:
         # Read and execute the target file
@@ -244,10 +257,10 @@ def run_with_breakpoints(python_file, trace_file, breakpoints):
     except KeyboardInterrupt:
         # User interrupted execution
         cdebugger.stop_trace()
-        print(f"\n{'='*60}")
-        print(f"EXECUTION INTERRUPTED BY USER")
-        print(f"{'='*60}")
-        print(f"\nTrace file saved to: {trace_file}")
+        print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"{Colors.YELLOW}EXECUTION INTERRUPTED BY USER{Colors.RESET}")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"\nTrace saved to: {Colors.BOLD}{trace_file}{Colors.RESET}")
         return False
         
     except Exception as e:
@@ -255,13 +268,13 @@ def run_with_breakpoints(python_file, trace_file, breakpoints):
         cdebugger.stop_trace()
         
         # Print the exception
-        print(f"\n{'='*60}")
-        print(f"EXCEPTION OCCURRED:")
-        print(f"{'='*60}")
+        print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"{Colors.RED}EXCEPTION OCCURRED:{Colors.RESET}")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
         traceback.print_exc()
-        print(f"{'='*60}")
-        print(f"\nTrace file saved to: {trace_file}")
-        print(f"Launching debugger CLI...")
+        print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print(f"\nTrace saved to: {Colors.BOLD}{trace_file}{Colors.RESET}")
+        print(f"{Colors.YELLOW}Launching post-execution debugger...{Colors.RESET}")
         
         launch_trace_viewer(trace_file)
         
@@ -269,11 +282,11 @@ def run_with_breakpoints(python_file, trace_file, breakpoints):
     
     # Normal completion
     cdebugger.stop_trace()
-    print(f"\n{'='*60}")
-    print(f"Execution completed successfully.")
-    print(f"{'='*60}")
-    print(f"\nTrace file saved to: {trace_file}")
-    print(f"Launching debugger CLI...")
+    print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+    print(f"{Colors.GREEN}Execution completed successfully.{Colors.RESET}")
+    print(f"{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+    print(f"\nTrace saved to: {Colors.BOLD}{trace_file}{Colors.RESET}")
+    print(f"{Colors.YELLOW}Launching post-execution debugger...{Colors.RESET}")
     
     launch_trace_viewer(trace_file)
     
@@ -283,16 +296,18 @@ def main():
     """Main entry point"""
     
     if len(sys.argv) < 2:
-        print("Python Interactive Debugger")
-        print("=" * 60)
-        print("\nUsage: python idebug.py <python_file> [trace_file]")
-        print("\nArguments:")
-        print("  python_file    Path to the Python file to execute")
-        print("  trace_file     Path to the trace file (default: trace.log)")
-        print("\nExample:")
-        print("  python idebug.py test.py")
-        print("  python idebug.py myapp.py my_trace.log")
-        print("\nThe interactive CLI will open to set breakpoints before execution.")
+        print(f"{Colors.CYAN}╔════════════════════════════════════════════════════════╗{Colors.RESET}")
+        print(f"{Colors.CYAN}║         Python Time-Traveling Debugger v1.0          ║{Colors.RESET}")
+        print(f"{Colors.CYAN}╚════════════════════════════════════════════════════════╝{Colors.RESET}\n")
+        print(f"{Colors.YELLOW}Usage:{Colors.RESET} python3 idebug.py <python_file> [trace_file]")
+        print(f"\n{Colors.GREEN}Arguments:{Colors.RESET}")
+        print(f"  python_file    Path to the Python file to debug")
+        print(f"  trace_file     Path to save trace (default: trace.log)")
+        print(f"\n{Colors.YELLOW}Example:{Colors.RESET}")
+        print(f"  python3 idebug.py test.py")
+        print(f"  python3 idebug.py myapp.py my_trace.log")
+        print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
+        print("The interactive CLI will open to set breakpoints before execution.")
         sys.exit(1)
     
     python_file = sys.argv[1]
@@ -300,12 +315,12 @@ def main():
     
     # Check if file exists
     if not os.path.exists(python_file):
-        print(f"Error: File '{python_file}' not found")
+        print(f"{Colors.RED}Error:{Colors.RESET} File '{python_file}' not found")
         sys.exit(1)
     
     # Check if it's a Python file
     if not python_file.endswith('.py'):
-        print(f"Warning: '{python_file}' doesn't have a .py extension")
+        print(f"{Colors.YELLOW}Warning:{Colors.RESET} '{python_file}' doesn't have a .py extension")
         response = input("Continue anyway? (y/n): ")
         if response.lower() != 'y':
             sys.exit(1)

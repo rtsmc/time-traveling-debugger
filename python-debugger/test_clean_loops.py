@@ -1,27 +1,14 @@
 """
-Breakpoint Test with Loops
-Tests breakpoint behavior in various loop scenarios
+Clean Loop Test - For use with idebug.py
+No embedded cdebugger calls - set breakpoints interactively
 """
-
-import cdebugger
-
-# Set breakpoints at strategic locations
-cdebugger.set_breakpoint("test_loop_breakpoints.py", 22)  # Before loop
-cdebugger.set_breakpoint("test_loop_breakpoints.py", 24)  # Inside loop
-cdebugger.set_breakpoint("test_loop_breakpoints.py", 32)  # Nested loop
-cdebugger.set_breakpoint("test_loop_breakpoints.py", 42)  # After loops
-
-# Start tracing
-cdebugger.start_trace("trace_loops.log")
 
 def simple_loop():
     """Test simple for loop with breakpoint inside"""
     print("\n=== Simple Loop Test ===")
     total = 0
-    # BREAKPOINT at line 22
     for i in range(5):
-        # BREAKPOINT at line 24 - will hit 5 times!
-        total += i
+        total += i  # Set breakpoint here (line 11)
         print(f"  i={i}, total={total}")
     print(f"Final total: {total}")
     return total
@@ -29,8 +16,7 @@ def simple_loop():
 def nested_loops():
     """Test nested loops with breakpoint"""
     print("\n=== Nested Loop Test ===")
-    # BREAKPOINT at line 32
-    for i in range(3):
+    for i in range(3):  # Set breakpoint here (line 20)
         for j in range(3):
             product = i * j
             print(f"  {i} * {j} = {product}")
@@ -40,8 +26,7 @@ def while_loop_test():
     """Test while loop with breakpoint"""
     print("\n=== While Loop Test ===")
     count = 0
-    # BREAKPOINT at line 42
-    while count < 3:
+    while count < 3:  # Set breakpoint here (line 30)
         count += 1
         print(f"  Count: {count}")
     print(f"Final count: {count}")
@@ -59,14 +44,17 @@ def loop_with_break():
 
 def main():
     print("╔════════════════════════════════════════════════════════╗")
-    print("║          Breakpoint Loop Test Program                ║")
+    print("║          Clean Loop Test Program                     ║")
     print("╚════════════════════════════════════════════════════════╝")
     print("\nThis program tests breakpoint behavior in loops.")
-    print("Breakpoints set at lines: 22, 24, 32, 42")
+    print("\nSuggested breakpoints:")
+    print("  - Line 11: Inside simple for loop")
+    print("  - Line 20: Outer loop of nested loops")
+    print("  - Line 30: While loop condition")
     print("\nTips:")
-    print("  - Press 'n' at line 24 to step through each iteration")
+    print("  - Press 'n' to step through each iteration")
     print("  - Press 'c' to continue and see breakpoint hit multiple times")
-    print("  - Watch how breakpoints behave in nested loops")
+    print("  - Press 'b' to step back through history")
     
     # Run tests
     result1 = simple_loop()
@@ -85,5 +73,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    cdebugger.stop_trace()
-    print("\n✓ Trace saved to: trace_loops.log")
