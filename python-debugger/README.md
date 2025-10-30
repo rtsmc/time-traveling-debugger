@@ -36,6 +36,8 @@ That's it! The debugger will stop at your breakpoints and let you step forward/b
 - 🔁 **Loop Persistence** - Breakpoints hit on every loop iteration
 - 📊 **Execution History** - View up to 1000 previous steps
 - 🔍 **Post-Execution Analysis** - Explore complete trace after program finishes
+- 🎯 **Post-CLI Breakpoint Navigation** - NEW! Set breakpoints in trace viewer and jump between them (forward/backward)
+- 📂 **Cross-File Debugging** - Breakpoints work in imported modules
 
 ## 📋 Commands
 
@@ -64,12 +66,40 @@ q - Quit execution
 n             - Next step in trace
 back          - Previous step
 :<number>     - Jump to execution number
+b <file> <line> - Set breakpoint (NEW!)
+list          - List all breakpoints (NEW!)
+c             - Continue to next breakpoint (NEW!)
+rc            - Reverse continue to previous breakpoint (NEW!)
 view          - View full source file
 summary       - Show trace statistics
 find <var>    - Search for variable
-break <line>  - Jump to source line
+jump <line>   - Jump to source line
 help          - Show help
 quit          - Exit (short: q)
+```
+
+### Post-Execution (Trace Viewer)
+
+After execution, explore the captured trace with breakpoint navigation:
+
+```bash
+[1/150] > b test.py 25          # Set breakpoint
+✓ Breakpoint set at test.py:25
+
+[1/150] > b helper.py 10        # Set another
+✓ Breakpoint set at helper.py:10
+
+[1/150] > c                     # Continue to next breakpoint
+⚫ BREAKPOINT HIT
+[25/150] test.py:25
+
+[25/150] > c                    # Next breakpoint
+⚫ BREAKPOINT HIT
+[42/150] helper.py:10
+
+[42/150] > rc                   # Reverse continue (go back)
+⟲ BREAKPOINT HIT (REVERSE)
+[25/150] test.py:25
 ```
 
 ## 💡 Example Session

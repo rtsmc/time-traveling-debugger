@@ -6,6 +6,7 @@
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
 #define MAX_FIELD_LENGTH 2048
+#define MAX_BREAKPOINTS 100
 
 typedef struct {
     long exec_order;
@@ -15,11 +16,22 @@ typedef struct {
     char variables[MAX_FIELD_LENGTH];
 } TraceEntry;
 
+// Breakpoint structure for post-execution navigation
+typedef struct {
+    char filename[512];
+    int line_number;
+} Breakpoint;
+
 typedef struct {
     TraceEntry *entries;
     int entry_count;
     int current_entry;
+    Breakpoint breakpoints[MAX_BREAKPOINTS];
+    int breakpoint_count;
 } TraceViewer;
+
+// Forward declarations
+void print_current_entry(TraceViewer *viewer);
 
 // Parse a trace line into a TraceEntry
 int parse_trace_line(char *line, TraceEntry *entry) {
@@ -80,6 +92,143 @@ int parse_trace_line(char *line, TraceEntry *entry) {
     return 1;
 }
 
+// Helper function to extract basename from path
+const char* get_basename(const char *path) {
+    const char *basename = strrchr(path, '/');
+    if (basename != NULL) {
+        return basename + 1;  // Skip the '/'
+    }
+    return path;  // No slash found, return as-is
+}
+
+// Helper function to check if two filenames match (supports basename matching)
+int filenames_match(const char *bp_filename, const char *trace_filename) {
+    // Exact match
+    if (strcmp(bp_filename, trace_filename) == 0) {
+        return 1;
+    }
+    
+    // Check if trace_filename contains bp_filename
+    if (strstr(trace_filename, bp_filename) != NULL) {
+        return 1;
+    }
+    
+    // Check basename match
+    const char *bp_base = get_basename(bp_filename);
+    const char *trace_base = get_basename(trace_filename);
+    if (strcmp(bp_base, trace_base) == 0) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+// Check if current entry matches any breakpoint
+int is_at_breakpoint(TraceViewer *viewer, int entry_index) {
+    if (entry_index < 0 || entry_index >= viewer->entry_count) {
+        return 0;
+    }
+    
+    TraceEntry *entry = &viewer->entries[entry_index];
+    
+    for (int i = 0; i < viewer->breakpoint_count; i++) {
+        if (viewer->breakpoints[i].line_number == entry->line_number &&
+            filenames_match(viewer->breakpoints[i].filename, entry->filename)) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Add a breakpoint
+void add_breakpoint(TraceViewer *viewer, const char *filename, int line_number) {
+    if (viewer->breakpoint_count >= MAX_BREAKPOINTS) {
+        printf("\033[1;31m✗ Maximum breakpoints (%d) reached\033[0m\n", MAX_BREAKPOINTS);
+        return;
+    }
+    
+    // Check for duplicates
+    for (int i = 0; i < viewer->breakpoint_count; i++) {
+        if (viewer->breakpoints[i].line_number == line_number &&
+            strcmp(viewer->breakpoints[i].filename, filename) == 0) {
+            printf("\033[1;33m⚠ Breakpoint already set at %s:%d\033[0m\n", filename, line_number);
+            return;
+        }
+    }
+    
+    Breakpoint *bp = &viewer->breakpoints[viewer->breakpoint_count];
+    strncpy(bp->filename, filename, sizeof(bp->filename) - 1);
+    bp->filename[sizeof(bp->filename) - 1] = '\0';
+    bp->line_number = line_number;
+    viewer->breakpoint_count++;
+    
+    printf("\033[1;32m✓ Breakpoint set at %s:%d\033[0m\n", filename, line_number);
+}
+
+// List all breakpoints
+void list_breakpoints(TraceViewer *viewer) {
+    if (viewer->breakpoint_count == 0) {
+        printf("\033[1;33mNo breakpoints set\033[0m\n");
+        return;
+    }
+    
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mBreakpoints:\033[0m\n");
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    for (int i = 0; i < viewer->breakpoint_count; i++) {
+        printf("  \033[1;32m%d.\033[0m %s:%d\n", i + 1, 
+               viewer->breakpoints[i].filename, 
+               viewer->breakpoints[i].line_number);
+    }
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("Total: \033[1;32m%d\033[0m breakpoint(s)\n\n", viewer->breakpoint_count);
+}
+
+// Continue to next breakpoint (forward)
+void continue_to_breakpoint(TraceViewer *viewer) {
+    if (viewer->breakpoint_count == 0) {
+        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+        return;
+    }
+    
+    // Search forward from current position
+    for (int i = viewer->current_entry + 1; i < viewer->entry_count; i++) {
+        if (is_at_breakpoint(viewer, i)) {
+            viewer->current_entry = i;
+            printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;31m⚫ BREAKPOINT HIT\033[0m\n");
+            printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            print_current_entry(viewer);
+            return;
+        }
+    }
+    
+    printf("\033[1;33m⚠ No more breakpoints ahead in trace\033[0m\n");
+}
+
+// Reverse continue to previous breakpoint (backward)
+void reverse_continue_to_breakpoint(TraceViewer *viewer) {
+    if (viewer->breakpoint_count == 0) {
+        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+        return;
+    }
+    
+    // Search backward from current position
+    for (int i = viewer->current_entry - 1; i >= 0; i--) {
+        if (is_at_breakpoint(viewer, i)) {
+            viewer->current_entry = i;
+            printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;35m⟲ BREAKPOINT HIT (REVERSE)\033[0m\n");
+            printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            print_current_entry(viewer);
+            return;
+        }
+    }
+    
+    printf("\033[1;33m⚠ No more breakpoints behind in trace\033[0m\n");
+}
+
 // Read trace file into memory
 int read_trace_file(const char *filename, TraceViewer *viewer) {
     FILE *file = fopen(filename, "r");
@@ -96,6 +245,7 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
     }
 
     viewer->entry_count = 0;
+    viewer->breakpoint_count = 0;  // Initialize breakpoint count
     char buffer[MAX_LINE_LENGTH];
     int first_line = 1;
 
@@ -286,13 +436,21 @@ void print_help() {
     printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
     printf("\033[1;33mTrace Debugger Commands\033[0m\n");
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\n\033[1;35mNavigation:\033[0m\n");
     printf("  \033[1;32mn\033[0m              - Next execution step\n");
     printf("  \033[1;32mback\033[0m           - Previous execution step\n");
     printf("  \033[1;32m:<number>\033[0m      - Jump to execution number (e.g., :100)\n");
+    printf("\n\033[1;35mBreakpoints:\033[0m\n");
+    printf("  \033[1;32mb <file> <line>\033[0m - Set breakpoint (e.g., b test.py 25)\n");
+    printf("  \033[1;32mlist\033[0m           - List all breakpoints\n");
+    printf("  \033[1;32mc\033[0m              - Continue to next breakpoint\n");
+    printf("  \033[1;32mrc\033[0m             - Reverse continue to previous breakpoint\n");
+    printf("\n\033[1;35mAnalysis:\033[0m\n");
     printf("  \033[1;32mview\033[0m           - View full source file with current line highlighted\n");
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
-    printf("  \033[1;32mbreak <line>\033[0m  - Show execution at source line (e.g., break 42)\n");
+    printf("  \033[1;32mjump <line>\033[0m   - Jump to first occurrence of source line\n");
+    printf("\n\033[1;35mOther:\033[0m\n");
     printf("  \033[1;32mhelp\033[0m           - Show this help\n");
     printf("  \033[1;32mquit\033[0m or \033[1;32mq\033[0m     - Exit debugger\n");
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
@@ -410,12 +568,65 @@ int main(int argc, char *argv[]) {
                 printf("\033[1;31m✗ Usage: find <variable_name>\033[0m\n");
             }
         }
-        // Handle 'break <line>' command
+        // Handle 'b <file> <line>' command (set breakpoint)
+        else if (cmd[0] == 'b' && (cmd[1] == ' ' || cmd[1] == '\0')) {
+            if (cmd[1] == '\0') {
+                // Just 'b' - list breakpoints
+                list_breakpoints(&viewer);
+            } else {
+                // 'b <file> <line>' - set breakpoint
+                char *args = cmd + 2;
+                while (isspace((unsigned char)*args)) args++;
+                
+                char filename[512];
+                int line_num;
+                
+                if (sscanf(args, "%s %d", filename, &line_num) == 2) {
+                    add_breakpoint(&viewer, filename, line_num);
+                } else {
+                    printf("\033[1;31m✗ Usage: b <file> <line>\033[0m\n");
+                    printf("Example: b test.py 25\n");
+                }
+            }
+        }
+        // Handle 'list' command (list breakpoints)
+        else if (strcmp(cmd, "list") == 0) {
+            list_breakpoints(&viewer);
+        }
+        // Handle 'c' command (continue to next breakpoint)
+        else if (strcmp(cmd, "c") == 0) {
+            continue_to_breakpoint(&viewer);
+        }
+        // Handle 'rc' command (reverse continue to previous breakpoint)
+        else if (strcmp(cmd, "rc") == 0) {
+            reverse_continue_to_breakpoint(&viewer);
+        }
+        // Handle 'jump <line>' command (jump to source line - old 'break' behavior)
+        else if (strncmp(cmd, "jump ", 5) == 0) {
+            int line_num = atoi(cmd + 5);
+            int found = 0;
+            
+            printf("\nSearching for line %d...\n\n", line_num);
+            for (int i = 0; i < viewer.entry_count; i++) {
+                if (viewer.entries[i].line_number == line_num) {
+                    viewer.current_entry = i;
+                    print_current_entry(&viewer);
+                    found = 1;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
+            }
+        }
+        // Handle old 'break <line>' command (redirect to 'jump')
         else if (strncmp(cmd, "break ", 6) == 0) {
             int line_num = atoi(cmd + 6);
             int found = 0;
             
-            printf("\nSearching for line %d...\n\n", line_num);
+            printf("\n\033[1;33mNote: 'break <line>' is deprecated. Use 'jump <line>' or 'b <file> <line>'\033[0m\n");
+            printf("Searching for line %d...\n\n", line_num);
             for (int i = 0; i < viewer.entry_count; i++) {
                 if (viewer.entries[i].line_number == line_num) {
                     viewer.current_entry = i;
