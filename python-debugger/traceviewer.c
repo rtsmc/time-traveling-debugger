@@ -445,7 +445,7 @@ void print_help() {
     printf("\n\033[1;35mNavigation:\033[0m\n");
     printf("  \033[1;32mn\033[0m              - Next execution step\n");
     printf("  \033[1;32mback\033[0m           - Previous execution step\n");
-    printf("  \033[1;32m:<number>\033[0m      - Jump to execution number (e.g., :100)\n");
+    printf("  \033[1;32m:<number>\033[0m      - Jump to execution (e.g., :5 jumps to [5/50])\n");
     printf("\n\033[1;35mBreakpoints:\033[0m\n");
     printf("  \033[1;32mb <file> <line>\033[0m - Set breakpoint (e.g., b test.py 25)\n");
     printf("  \033[1;32mlist\033[0m           - List all breakpoints\n");
@@ -495,10 +495,9 @@ int main(int argc, char *argv[]) {
 
     char input[MAX_LINE_LENGTH];
     while (1) {
-        // Show execution number (from exec_order) and position
-        long exec_num = viewer.entries[viewer.current_entry].exec_order;
-        printf("\n\033[1;32m[Exec #%ld - %d/%d]\033[0m > ", 
-               exec_num, viewer.current_entry + 1, viewer.entry_count);
+        // Show user-friendly 1-based position
+        printf("\n\033[1;32m[%d/%d]\033[0m > ", 
+               viewer.current_entry + 1, viewer.entry_count);
         if (!fgets(input, sizeof(input), stdin)) {
             break;
         }
