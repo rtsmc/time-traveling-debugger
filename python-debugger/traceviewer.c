@@ -384,7 +384,7 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
 }
 
 // View full source file with current line highlighted
-void view_file(TraceViewer *viewer) {
+void show_file(TraceViewer *viewer) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
         printf("No current entry\n");
         return;
@@ -406,6 +406,7 @@ void view_file(TraceViewer *viewer) {
     
     char line[MAX_LINE_LENGTH];
     int line_num = 1;
+    int bp_count = 0;
     
     while (fgets(line, sizeof(line), file)) {
         // Remove trailing newline
@@ -414,12 +415,27 @@ void view_file(TraceViewer *viewer) {
             line[len - 1] = '\0';
         }
         
+        // Check if this line has a breakpoint
+        int has_breakpoint = 0;
+        for (int i = 0; i < viewer->breakpoint_count; i++) {
+            if (viewer->breakpoints[i].line_number == line_num &&
+                filenames_match(viewer->breakpoints[i].filename, filename)) {
+                has_breakpoint = 1;
+                bp_count++;
+                break;
+            }
+        }
+        
+        // Format: marker + line number + separator + code
+        const char *marker = has_breakpoint ? "\033[1;31m⚫\033[0m" : "  ";
+        
         if (line_num == highlight_line) {
             // Highlight current line (green background)
-            printf("\033[42m\033[30m>>> [Line %3d] %s\033[0m\n", line_num, line);
+            printf("%s \033[42m\033[30m%4d\033[0m \033[1;32m|\033[0m \033[42m\033[30m%s\033[0m\n", 
+                   marker, line_num, line);
         } else {
             // Normal line
-            printf("    [Line %3d] %s\n", line_num, line);
+            printf("%s \033[1;32m%4d\033[0m | %s\n", marker, line_num, line);
         }
         
         line_num++;
@@ -427,6 +443,10 @@ void view_file(TraceViewer *viewer) {
     
     fclose(file);
     printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("Total lines: \033[1m%d\033[0m\n", line_num - 1);
+    if (bp_count > 0) {
+        printf("Breakpoints: \033[1m%d\033[0m in this file\n", bp_count);
+    }
     printf("Currently at: \033[1;32m[Execution #%ld]\033[0m Line %d\n", 
            current->exec_order, highlight_line);
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
@@ -452,7 +472,7 @@ void print_help() {
     printf("  \033[1;32mc\033[0m              - Continue to next breakpoint\n");
     printf("  \033[1;32mrc\033[0m             - Reverse continue to previous breakpoint\n");
     printf("\n\033[1;35mAnalysis:\033[0m\n");
-    printf("  \033[1;32mview\033[0m           - View full source file with current line highlighted\n");
+    printf("  \033[1;32mshow\033[0m           - Show full source file with current line highlighted\n");
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
     printf("  \033[1;32mjump <line>\033[0m   - Jump to first occurrence of source line\n");
@@ -539,9 +559,9 @@ int main(int argc, char *argv[]) {
         else if (strcmp(cmd, "summary") == 0) {
             print_summary(&viewer);
         }
-        // Handle 'view' command
-        else if (strcmp(cmd, "view") == 0) {
-            view_file(&viewer);
+        // Handle 'show' command
+        else if (strcmp(cmd, "show") == 0) {
+            show_file(&viewer);
         }
         // Handle 'help' command
         else if (strcmp(cmd, "help") == 0) {
