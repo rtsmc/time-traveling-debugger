@@ -74,8 +74,11 @@ Set breakpoints before running your program.
                 if response.lower() != 'y':
                     return
             
-            self.breakpoints.append((filename, line))
-            print(f"{Colors.GREEN}✓ Breakpoint set at{Colors.RESET} {filename}:{line}")
+            # Normalize to absolute path for consistent matching
+            abs_filename = os.path.abspath(filename)
+            
+            self.breakpoints.append((abs_filename, line))
+            print(f"{Colors.GREEN}✓ Breakpoint set at{Colors.RESET} {abs_filename}:{line}")
             
         except ValueError:
             print(f"{Colors.RED}Error:{Colors.RESET} Line number must be an integer")
@@ -130,9 +133,15 @@ Set breakpoints before running your program.
         if not arg:
             arg = self.python_file
         
+        # Try to resolve the file path
         if not os.path.exists(arg):
-            print(f"{Colors.RED}Error:{Colors.RESET} File '{arg}' not found")
-            return
+            # Try as absolute path from breakpoints
+            abs_arg = os.path.abspath(arg)
+            if os.path.exists(abs_arg):
+                arg = abs_arg
+            else:
+                print(f"{Colors.RED}Error:{Colors.RESET} File '{arg}' not found")
+                return
         
         try:
             print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
@@ -142,15 +151,25 @@ Set breakpoints before running your program.
             with open(arg, 'r') as f:
                 lines = f.readlines()
             
-            # Show breakpoints
-            bp_lines = set(line for file, line in self.breakpoints if file == arg)
+            # Normalize arg path for comparison
+            arg_abs = os.path.abspath(arg)
+            
+            # Show breakpoints - check both relative and absolute paths
+            bp_lines = set()
+            for file, line in self.breakpoints:
+                # Compare absolute paths
+                if os.path.abspath(file) == arg_abs:
+                    bp_lines.add(line)
             
             for i, line in enumerate(lines, 1):
                 marker = f"{Colors.RED}⚫{Colors.RESET}" if i in bp_lines else "  "
                 print(f"{marker} {Colors.GREEN}{i:4d}{Colors.RESET} | {line.rstrip()}")
             
             print(f"\n{Colors.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}")
-            print(f"Total lines: {Colors.BOLD}{len(lines)}{Colors.RESET}\n")
+            print(f"Total lines: {Colors.BOLD}{len(lines)}{Colors.RESET}")
+            if bp_lines:
+                print(f"Breakpoints: {Colors.BOLD}{len(bp_lines)}{Colors.RESET} in this file")
+            print()
             
         except Exception as e:
             print(f"{Colors.RED}Error reading file:{Colors.RESET} {e}")

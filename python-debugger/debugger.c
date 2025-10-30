@@ -112,13 +112,50 @@ static int add_breakpoint(const char *filename, int lineno) {
     return 1;
 }
 
+// Helper function to extract basename from path
+static const char* get_basename(const char *path) {
+    const char *basename = strrchr(path, '/');
+    if (basename != NULL) {
+        return basename + 1;  // Skip the '/'
+    }
+    return path;  // No slash found, return as-is
+}
+
+// Helper function to check if two filenames match
+// Supports exact match, absolute path match, and basename match
+static int filenames_match(const char *bp_filename, const char *current_filename) {
+    // Exact match
+    if (strcmp(bp_filename, current_filename) == 0) {
+        return 1;
+    }
+    
+    // Check if one is absolute and contains the other
+    if (strstr(current_filename, bp_filename) != NULL) {
+        // Check if it's a proper path match (not just substring)
+        const char *found = strstr(current_filename, bp_filename);
+        // Verify it's at the end or followed by end of string
+        if (found + strlen(bp_filename) == current_filename + strlen(current_filename)) {
+            return 1;
+        }
+    }
+    
+    // Check basename match as fallback
+    const char *bp_base = get_basename(bp_filename);
+    const char *current_base = get_basename(current_filename);
+    if (strcmp(bp_base, current_base) == 0) {
+        return 1;
+    }
+    
+    return 0;
+}
+
 // Helper function to check if we're at a breakpoint
 static Breakpoint* check_breakpoint(const char *filename, int lineno) {
     Breakpoint *bp = breakpoints;
     while (bp != NULL) {
         if (bp->enabled && 
             bp->lineno == lineno && 
-            strcmp(bp->filename, filename) == 0) {
+            filenames_match(bp->filename, filename)) {
             bp->hit_count++;
             return bp;
         }
