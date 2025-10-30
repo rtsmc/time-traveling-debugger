@@ -550,21 +550,28 @@ int main(int argc, char *argv[]) {
         }
         // Handle ':<number>' command (jump to execution)
         else if (cmd[0] == ':') {
-            long exec_num = atol(cmd + 1);
+            long user_num = atol(cmd + 1);
+            // Convert from 1-based user input to 0-based internal execution order
+            long exec_num = user_num - 1;
             int found = 0;
             
-            for (int i = 0; i < viewer.entry_count; i++) {
-                if (viewer.entries[i].exec_order == exec_num) {
-                    viewer.current_entry = i;
-                    print_current_entry(&viewer);
-                    found = 1;
-                    break;
+            // Validate range (user sees 1 to N, we search for 0 to N-1)
+            if (user_num < 1 || user_num > viewer.entry_count) {
+                printf("\033[1;31m✗ Execution #%ld out of range. Valid range: 1-%d\033[0m\n", 
+                       user_num, viewer.entry_count);
+            } else {
+                for (int i = 0; i < viewer.entry_count; i++) {
+                    if (viewer.entries[i].exec_order == exec_num) {
+                        viewer.current_entry = i;
+                        print_current_entry(&viewer);
+                        found = 1;
+                        break;
+                    }
                 }
-            }
-            
-            if (!found) {
-                printf("\033[1;31m✗ Execution #%ld not found. Valid range: 0-%ld\033[0m\n", 
-                       exec_num, viewer.entries[viewer.entry_count - 1].exec_order);
+                
+                if (!found) {
+                    printf("\033[1;31m✗ Execution #%ld not found in trace\033[0m\n", user_num);
+                }
             }
         }
         // Handle 'find <var>' command
