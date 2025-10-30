@@ -204,7 +204,10 @@ void continue_to_breakpoint(TraceViewer *viewer) {
         }
     }
     
-    printf("\033[1;33m⚠ No more breakpoints ahead in trace\033[0m\n");
+    // No more breakpoints - go to end
+    printf("\033[1;33m⚠ No more breakpoints ahead. Jumping to end of trace.\033[0m\n");
+    viewer->current_entry = viewer->entry_count - 1;
+    print_current_entry(viewer);
 }
 
 // Reverse continue to previous breakpoint (backward)
@@ -226,7 +229,10 @@ void reverse_continue_to_breakpoint(TraceViewer *viewer) {
         }
     }
     
-    printf("\033[1;33m⚠ No more breakpoints behind in trace\033[0m\n");
+    // No more breakpoints - go to beginning
+    printf("\033[1;33m⚠ No more breakpoints behind. Jumping to beginning of trace.\033[0m\n");
+    viewer->current_entry = 0;
+    print_current_entry(viewer);
 }
 
 // Read trace file into memory
@@ -489,7 +495,10 @@ int main(int argc, char *argv[]) {
 
     char input[MAX_LINE_LENGTH];
     while (1) {
-        printf("\n\033[1;32m[%d/%d]\033[0m > ", viewer.current_entry + 1, viewer.entry_count);
+        // Show execution number (from exec_order) and position
+        long exec_num = viewer.entries[viewer.current_entry].exec_order;
+        printf("\n\033[1;32m[Exec #%ld - %d/%d]\033[0m > ", 
+               exec_num, viewer.current_entry + 1, viewer.entry_count);
         if (!fgets(input, sizeof(input), stdin)) {
             break;
         }
