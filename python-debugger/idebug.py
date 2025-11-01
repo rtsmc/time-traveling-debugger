@@ -10,6 +10,8 @@ import cdebugger
 import traceback
 import subprocess
 import cmd
+import readline
+import atexit
 
 # ANSI color codes for consistent styling
 class Colors:
@@ -54,6 +56,67 @@ Set breakpoints before running your program.
         self.trace_file = trace_file
         self.breakpoints = []  # List of (file, line) tuples
         self.should_run = False
+        self.last_command = None
+        
+        # Set up command history
+        self.history_file = os.path.expanduser('~/.idebug_history')
+        try:
+            readline.read_history_file(self.history_file)
+            readline.set_history_length(1000)
+        except FileNotFoundError:
+            pass
+        
+        # Save history on exit
+        atexit.register(readline.write_history_file, self.history_file)
+        
+        # Enable tab completion
+        readline.set_completer_delims(' \t\n')
+        readline.parse_and_bind('tab: complete')
+        
+        # Disable automatic history - we'll add manually
+        readline.set_auto_history(False)
+    
+    def completedefault(self, text, line, begidx, endidx):
+        """Default completion for filenames - only .py files"""
+        # Only complete for commands that take file arguments
+        words = line.split()
+        if len(words) == 0:
+            return []
+        
+        cmd = words[0]
+        # Only provide filename completion for 'break', 'b', 'show' commands
+        if cmd not in ['break', 'b', 'show']:
+            return []
+        
+        if not text:
+            text = ""
+        
+        # Get list of .py files in current directory
+        try:
+            files = os.listdir('.')
+            py_files = [f for f in files if f.endswith('.py') and f.startswith(text)]
+            return py_files
+        except:
+            return []
+    
+    def completenames(self, text, *ignored):
+        """Override to provide command completion"""
+        commands = ['break', 'b', 'list', 'l', 'clear', 'show', 'run', 'r', 'help', 'quit', 'q']
+        return [cmd for cmd in commands if cmd.startswith(text)]
+    
+    def emptyline(self):
+        """Repeat last command when empty line is entered"""
+        if self.last_command:
+            return self.onecmd(self.last_command)
+        return False
+    
+    def precmd(self, line):
+        """Store last non-empty command and add to history"""
+        if line.strip():
+            self.last_command = line
+            # Manually add to history (only executed commands, not tab attempts)
+            readline.add_history(line)
+        return line
         
     def do_break(self, arg):
         """Set a breakpoint: break <file> <line>"""
@@ -220,22 +283,55 @@ Set breakpoints before running your program.
 
 def launch_trace_viewer(trace_file):
     """Launch the trace viewer CLI"""
-    if not os.path.exists("./traceviewer"):
+    traceviewer_path = "./traceviewer"
+    
+    # Check if traceviewer exists and is executable
+    needs_compile = False
+    if not os.path.exists(traceviewer_path):
+        needs_compile = True
+    elif not os.access(traceviewer_path, os.X_OK):
+        # Exists but not executable - make it executable
+        try:
+            os.chmod(traceviewer_path, 0o755)
+        except:
+            needs_compile = True
+    
+    if needs_compile:
         print(f"\n{Colors.YELLOW}Compiling trace viewer...{Colors.RESET}")
+        
+        # Try with readline first
         result = subprocess.run(
-            ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2"],
+            ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2", "-lreadline"],
             capture_output=True,
             text=True
         )
+        
+        # If readline fails, try without it
+        if result.returncode != 0 and "readline" in result.stderr:
+            print(f"{Colors.YELLOW}Readline not found, building basic version...{Colors.RESET}")
+            result = subprocess.run(
+                ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2", "-DNO_READLINE"],
+                capture_output=True,
+                text=True
+            )
+        
         if result.returncode != 0:
             print(f"{Colors.RED}Failed to compile traceviewer.{Colors.RESET}")
             print(f"Error: {result.stderr}")
-            print(f"\nYou can manually compile with: {Colors.BOLD}gcc -o traceviewer traceviewer.c -Wall -O2{Colors.RESET}")
+            print(f"\nYou can manually compile with:")
+            print(f"  {Colors.BOLD}gcc -o traceviewer traceviewer.c -Wall -O2 -lreadline{Colors.RESET}")
+            print(f"  or: {Colors.BOLD}make{Colors.RESET}")
             print(f"Then run: {Colors.BOLD}./traceviewer {trace_file}{Colors.RESET}")
             return
+        
+        # Make executable
+        try:
+            os.chmod(traceviewer_path, 0o755)
+        except Exception as e:
+            print(f"{Colors.YELLOW}Warning: Could not make traceviewer executable: {e}{Colors.RESET}")
     
     print("\n")
-    subprocess.run(["./traceviewer", trace_file])
+    subprocess.run([traceviewer_path, trace_file])
 
 def run_with_breakpoints(python_file, trace_file, breakpoints):
     """
