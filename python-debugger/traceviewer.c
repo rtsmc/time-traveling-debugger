@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <dirent.h>
 
 // Readline support (optional)
 #ifndef NO_READLINE
@@ -197,7 +198,10 @@ void list_breakpoints(TraceViewer *viewer) {
 // Continue to next breakpoint (forward)
 void continue_to_breakpoint(TraceViewer *viewer) {
     if (viewer->breakpoint_count == 0) {
-        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+        // No breakpoints set - just jump to end
+        printf("\033[1;33m⚠ No breakpoints set. Jumping to end of trace.\033[0m\n");
+        viewer->current_entry = viewer->entry_count - 1;
+        print_current_entry(viewer);
         return;
     }
     
@@ -222,7 +226,10 @@ void continue_to_breakpoint(TraceViewer *viewer) {
 // Reverse continue to previous breakpoint (backward)
 void reverse_continue_to_breakpoint(TraceViewer *viewer) {
     if (viewer->breakpoint_count == 0) {
-        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+        // No breakpoints set - just jump to beginning
+        printf("\033[1;33m⚠ No breakpoints set. Jumping to beginning of trace.\033[0m\n");
+        viewer->current_entry = 0;
+        print_current_entry(viewer);
         return;
     }
     
@@ -507,6 +514,45 @@ void print_help() {
 }
 
 #if HAS_READLINE
+// Filename completion support - only .py files
+static char* filename_generator(const char* text, int state) {
+    static DIR *dir = NULL;
+    static int len;
+    struct dirent *entry;
+    
+    if (!state) {
+        // First call - open directory
+        if (dir) {
+            closedir(dir);
+        }
+        dir = opendir(".");
+        len = strlen(text);
+    }
+    
+    if (!dir) {
+        return NULL;
+    }
+    
+    // Read directory entries
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        size_t name_len = strlen(name);
+        
+        // Only .py files
+        if (name_len > 3 && strcmp(name + name_len - 3, ".py") == 0) {
+            // Check if it matches the text
+            if (strncmp(name, text, len) == 0) {
+                return strdup(name);
+            }
+        }
+    }
+    
+    // No more matches
+    closedir(dir);
+    dir = NULL;
+    return NULL;
+}
+
 // Tab completion support
 static char* command_generator(const char* text, int state) {
     static int list_index, len;
@@ -533,13 +579,26 @@ static char* command_generator(const char* text, int state) {
 }
 
 static char** command_completion(const char* text, int start, int end) {
+    // Don't use default filename completion
     rl_attempted_completion_over = 1;
     
-    // Only complete commands at the start of the line
+    // Complete commands at the start of the line
     if (start == 0) {
         return rl_completion_matches(text, command_generator);
     }
     
+    // For arguments, check what command was typed
+    // Get the line buffer to check the command
+    const char *line = rl_line_buffer;
+    
+    // Check if this is 'show' or 'b'/'break' command - complete .py filenames
+    if ((strncmp(line, "show ", 5) == 0 && start >= 5) ||
+        (strncmp(line, "b ", 2) == 0 && start >= 2) ||
+        (strncmp(line, "break ", 6) == 0 && start >= 6)) {
+        return rl_completion_matches(text, filename_generator);
+    }
+    
+    // No completion for other arguments
     return NULL;
 }
 
