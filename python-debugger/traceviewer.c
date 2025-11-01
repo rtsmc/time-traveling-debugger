@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
@@ -482,6 +484,67 @@ void print_help() {
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
+// Tab completion support
+static char* command_generator(const char* text, int state) {
+    static int list_index, len;
+    static const char* commands[] = {
+        "n", "next", "back", "b", "break", "list", "clear", "c", "continue",
+        "rc", "show", "summary", "find", "jump", "help", "quit", "q", NULL
+    };
+    
+    if (!state) {
+        list_index = 0;
+        len = strlen(text);
+    }
+    
+    while (commands[list_index]) {
+        const char* name = commands[list_index];
+        list_index++;
+        
+        if (strncmp(name, text, len) == 0) {
+            return strdup(name);
+        }
+    }
+    
+    return NULL;
+}
+
+static char** command_completion(const char* text, int start, int end) {
+    rl_attempted_completion_over = 1;
+    
+    // Only complete commands at the start of the line
+    if (start == 0) {
+        return rl_completion_matches(text, command_generator);
+    }
+    
+    return NULL;
+}
+
+// Initialize readline
+void init_readline() {
+    // Set up tab completion
+    rl_attempted_completion_function = command_completion;
+    
+    // Load history from file
+    char* home = getenv("HOME");
+    if (home) {
+        char history_file[512];
+        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
+        read_history(history_file);
+        stifle_history(1000);  // Limit to 1000 entries
+    }
+}
+
+// Save history on exit
+void save_readline_history() {
+    char* home = getenv("HOME");
+    if (home) {
+        char history_file[512];
+        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
+        write_history(history_file);
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <trace_file>\n", argv[0]);
@@ -508,34 +571,68 @@ int main(int argc, char *argv[]) {
     }
 
     printf("✓ Loaded %d execution steps\n", viewer.entry_count);
+    
+    // Initialize readline for command history and tab completion
+    init_readline();
+    
     print_help();
     
     // Print first entry
     print_current_entry(&viewer);
 
-    char input[MAX_LINE_LENGTH];
+    char *last_command = NULL;
     while (1) {
-        // Show user-friendly 1-based position
-        printf("\n\033[1;32m[%d/%d]\033[0m > ", 
-               viewer.current_entry + 1, viewer.entry_count);
-        if (!fgets(input, sizeof(input), stdin)) {
+        // Build prompt with user-friendly 1-based position
+        char prompt[64];
+        snprintf(prompt, sizeof(prompt), "\n\033[1;32m[%d/%d]\033[0m > ", 
+                 viewer.current_entry + 1, viewer.entry_count);
+        
+        // Use readline for better line editing and history
+        char *line = readline(prompt);
+        
+        // Check for EOF (Ctrl+D)
+        if (!line) {
+            printf("\n");
             break;
         }
-
-        // Remove trailing newline
-        size_t len = strlen(input);
-        if (len > 0 && input[len - 1] == '\n') {
-            input[len - 1] = '\0';
-        }
-
+        
         // Trim whitespace
-        char *cmd = input;
+        char *cmd = line;
         while (isspace((unsigned char)*cmd)) cmd++;
         
-        // Handle empty input
+        // Handle empty input - repeat last command
         if (strlen(cmd) == 0) {
-            continue;
+            free(line);
+            if (last_command) {
+                cmd = last_command;
+                // Note: don't add to history again
+            } else {
+                continue;
+            }
+        } else {
+            // Add non-empty command to history
+            add_history(line);
+            
+            // Update last command
+            if (last_command) {
+                free(last_command);
+            }
+            last_command = strdup(cmd);
         }
+        
+        // Copy command to input buffer for processing
+        char input[MAX_LINE_LENGTH];
+        strncpy(input, cmd, MAX_LINE_LENGTH - 1);
+        input[MAX_LINE_LENGTH - 1] = '\0';
+        
+        // Free the readline buffer (but not last_command if we're using it)
+        if (cmd == line) {
+            free(line);
+        }
+        
+        // Point cmd to input buffer for command processing
+        cmd = input;
+        while (isspace((unsigned char)*cmd)) cmd++;
 
         // Handle 'n' command (next)
         if (strcmp(cmd, "n") == 0) {
@@ -684,6 +781,14 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Save command history
+    save_readline_history();
+    
+    // Free last command
+    if (last_command) {
+        free(last_command);
+    }
+    
     cleanup(&viewer);
     printf("\n\033[1;36mGoodbye! Happy debugging! 🐛\033[0m\n\n");
     return 0;

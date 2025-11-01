@@ -10,6 +10,8 @@ import cdebugger
 import traceback
 import subprocess
 import cmd
+import readline
+import atexit
 
 # ANSI color codes for consistent styling
 class Colors:
@@ -54,6 +56,30 @@ Set breakpoints before running your program.
         self.trace_file = trace_file
         self.breakpoints = []  # List of (file, line) tuples
         self.should_run = False
+        self.last_command = None
+        
+        # Set up command history
+        self.history_file = os.path.expanduser('~/.idebug_history')
+        try:
+            readline.read_history_file(self.history_file)
+            readline.set_history_length(1000)
+        except FileNotFoundError:
+            pass
+        
+        # Save history on exit
+        atexit.register(readline.write_history_file, self.history_file)
+    
+    def emptyline(self):
+        """Repeat last command when empty line is entered"""
+        if self.last_command:
+            return self.onecmd(self.last_command)
+        return False
+    
+    def precmd(self, line):
+        """Store last non-empty command"""
+        if line.strip():
+            self.last_command = line
+        return line
         
     def do_break(self, arg):
         """Set a breakpoint: break <file> <line>"""
