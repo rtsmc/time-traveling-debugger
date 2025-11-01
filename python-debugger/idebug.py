@@ -72,17 +72,30 @@ Set breakpoints before running your program.
         # Enable tab completion
         readline.set_completer_delims(' \t\n')
         readline.parse_and_bind('tab: complete')
+        
+        # Disable automatic history - we'll add manually
+        readline.set_auto_history(False)
     
     def completedefault(self, text, line, begidx, endidx):
-        """Default completion for filenames"""
-        # Complete filenames for commands that take file arguments
-        if not text:
+        """Default completion for filenames - only .py files"""
+        # Only complete for commands that take file arguments
+        words = line.split()
+        if len(words) == 0:
             return []
         
-        # Get list of files in current directory
+        cmd = words[0]
+        # Only provide filename completion for 'break', 'b', 'show' commands
+        if cmd not in ['break', 'b', 'show']:
+            return []
+        
+        if not text:
+            text = ""
+        
+        # Get list of .py files in current directory
         try:
             files = os.listdir('.')
-            return [f for f in files if f.startswith(text)]
+            py_files = [f for f in files if f.endswith('.py') and f.startswith(text)]
+            return py_files
         except:
             return []
     
@@ -98,9 +111,11 @@ Set breakpoints before running your program.
         return False
     
     def precmd(self, line):
-        """Store last non-empty command"""
+        """Store last non-empty command and add to history"""
         if line.strip():
             self.last_command = line
+            # Manually add to history (only executed commands, not tab attempts)
+            readline.add_history(line)
         return line
         
     def do_break(self, arg):
