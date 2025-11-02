@@ -399,6 +399,44 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
     }
 }
 
+// Helper: try to open a file, discovering directory from trace if needed
+static FILE* try_open_with_trace_dir(const char *basename, TraceViewer *viewer, char *resolved_path, size_t path_size) {
+    FILE *f;
+    
+    // Strategy 1: Try basename in current directory
+    f = fopen(basename, "r");
+    if (f) {
+        strncpy(resolved_path, basename, path_size - 1);
+        return f;
+    }
+    
+    // Strategy 2: Extract directory from trace entries and try there
+    for (int i = 0; i < viewer->entry_count; i++) {
+        const char *trace_file = viewer->entries[i].filename;
+        
+        // If this entry has a directory path, extract it
+        const char *last_slash = strrchr(trace_file, '/');
+        if (last_slash && last_slash > trace_file) {
+            // Extract directory
+            size_t dir_len = last_slash - trace_file;
+            char dir_path[1024];
+            strncpy(dir_path, trace_file, dir_len);
+            dir_path[dir_len] = '\0';
+            
+            // Try: directory/basename
+            char try_path[1024];
+            snprintf(try_path, sizeof(try_path), "%s/%s", dir_path, basename);
+            f = fopen(try_path, "r");
+            if (f) {
+                strncpy(resolved_path, try_path, path_size - 1);
+                return f;
+            }
+        }
+    }
+    
+    return NULL;
+}
+
 // View full source file with current line highlighted
 void show_file(TraceViewer *viewer, const char *requested_file) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
@@ -408,65 +446,71 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     
     TraceEntry *current = &viewer->entries[viewer->current_entry];
     const char *filename = NULL;
-    int highlight_line = -1;  // -1 means no highlight
+    int highlight_line = -1;
+    char resolved_path[1024] = {0};
     
-    // If a specific file was requested, find it
+    // If a specific file was requested
     if (requested_file && strlen(requested_file) > 0) {
-        // First, search the trace for a matching file
-        const char *found_path = NULL;
+        const char *basename_to_use = get_basename(requested_file);
+        
+        // Search trace for matching file
+        const char *found_in_trace = NULL;
         for (int i = 0; i < viewer->entry_count; i++) {
             if (filenames_match(requested_file, viewer->entries[i].filename)) {
-                found_path = viewer->entries[i].filename;
-                
-                // Try to open it to see if path is valid
-                FILE *test = fopen(found_path, "r");
-                if (test) {
-                    fclose(test);
-                    break;  // Found and accessible
-                }
-                // Path from trace doesn't work, keep searching
+                found_in_trace = viewer->entries[i].filename;
+                break;
             }
         }
         
-        if (found_path) {
-            filename = found_path;
-            
-            // If the trace path doesn't exist, try just the basename in current dir
-            FILE *test = fopen(filename, "r");
-            if (!test) {
-                const char *basename = get_basename(filename);
-                test = fopen(basename, "r");
+        if (found_in_trace) {
+            // Try trace path directly
+            FILE *test = fopen(found_in_trace, "r");
+            if (test) {
+                fclose(test);
+                filename = found_in_trace;
+            } else {
+                // Try with directory discovery
+                test = try_open_with_trace_dir(get_basename(found_in_trace), viewer, resolved_path, sizeof(resolved_path));
                 if (test) {
                     fclose(test);
-                    filename = basename;
+                    filename = resolved_path;
+                } else {
+                    filename = basename_to_use;
                 }
-            } else {
-                fclose(test);
             }
         } else {
-            // Not found in trace - try the filename as-is
-            filename = requested_file;
+            // Not in trace, try with directory discovery
+            FILE *test = try_open_with_trace_dir(basename_to_use, viewer, resolved_path, sizeof(resolved_path));
+            if (test) {
+                fclose(test);
+                filename = resolved_path;
+            } else {
+                filename = basename_to_use;
+            }
         }
         
-        // Check if we should highlight (matches current file)
+        // Check if we should highlight
         if (filenames_match(requested_file, current->filename)) {
             highlight_line = current->line_number;
         }
     } else {
         // Default to current file
-        filename = current->filename;
+        const char *current_path = current->filename;
         
-        // If current filename doesn't exist, try basename
-        FILE *test = fopen(filename, "r");
-        if (!test) {
-            const char *basename = get_basename(filename);
-            test = fopen(basename, "r");
+        // Try current path directly
+        FILE *test = fopen(current_path, "r");
+        if (test) {
+            fclose(test);
+            filename = current_path;
+        } else {
+            // Try with directory discovery
+            test = try_open_with_trace_dir(get_basename(current_path), viewer, resolved_path, sizeof(resolved_path));
             if (test) {
                 fclose(test);
-                filename = basename;
+                filename = resolved_path;
+            } else {
+                filename = get_basename(current_path);
             }
-        } else {
-            fclose(test);
         }
         
         highlight_line = current->line_number;
@@ -474,11 +518,10 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     
     FILE *file = fopen(filename, "r");
     if (!file) {
-        printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", filename);
+        printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", get_basename(filename));
         if (requested_file && strlen(requested_file) > 0) {
             printf("\033[1;33mTip: File not found in trace or on disk.\033[0m\n");
             printf("\033[1;33mFiles in trace:\033[0m\n");
-            // Show unique files in the trace (basenames)
             for (int i = 0; i < viewer->entry_count; i++) {
                 int already_shown = 0;
                 for (int j = 0; j < i; j++) {
