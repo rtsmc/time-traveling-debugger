@@ -13,8 +13,9 @@
 | 7 | Up/down arrows don't work | Post-CLI | 2 | ✅ Fixed (readline) |
 | 8 | Doesn't autocomplete .py files | Post-CLI | 3 | ✅ Fixed |
 | 9 | Can't use 'c' without breakpoints | Post-CLI | 3 | ✅ Fixed |
+| 10 | Cannot show other files by filename | Post-CLI | 4 | ✅ Fixed |
 
-**TOTAL: 9/9 Issues Resolved** ✅
+**TOTAL: 10/10 Issues Resolved** ✅
 
 ---
 
@@ -41,6 +42,11 @@
 #### Post-CLI (traceviewer.c)
 7. **Filename completion** - Tab completes .py files for show/break commands
 8. **Smart continue** - 'c' jumps to end when no breakpoints, 'rc' to beginning
+
+### Round 4: Show Command Path Resolution
+
+#### Post-CLI (traceviewer.c)
+9. **Smart file resolution** - show command now finds files by basename, even when trace has absolute paths
 
 ---
 
@@ -318,9 +324,9 @@ python3 idebug.py test_import_main.py
 
 Status: ✅ PRODUCTION READY
 
-Issues Resolved: 9/9 (100%)
-Rounds of Fixes: 3
-Total Changes: ~91 lines
+Issues Resolved: 10/10 (100%)
+Rounds of Fixes: 4
+Total Changes: ~106 lines
 Time Investment: Worth it!
 
 Quality: ⭐⭐⭐⭐⭐

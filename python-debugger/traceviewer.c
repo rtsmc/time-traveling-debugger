@@ -412,7 +412,24 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     
     // If a specific file was requested, use it
     if (requested_file && strlen(requested_file) > 0) {
-        filename = requested_file;
+        // First, try to find this file in the trace
+        // This handles cases where user types "test.py" but trace has "/path/to/test.py"
+        const char *found_path = NULL;
+        for (int i = 0; i < viewer->entry_count; i++) {
+            if (filenames_match(requested_file, viewer->entries[i].filename)) {
+                found_path = viewer->entries[i].filename;
+                break;
+            }
+        }
+        
+        if (found_path) {
+            // Found matching file in trace - use its path
+            filename = found_path;
+        } else {
+            // Not in trace - try the filename as-is (might be a valid path)
+            filename = requested_file;
+        }
+        
         // Only highlight if this is the current file
         if (filenames_match(requested_file, current->filename)) {
             highlight_line = current->line_number;
@@ -426,6 +443,23 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     FILE *file = fopen(filename, "r");
     if (!file) {
         printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", filename);
+        if (requested_file && strlen(requested_file) > 0) {
+            printf("\033[1;33mTip: File not found in trace or on disk.\033[0m\n");
+            printf("\033[1;33mFiles in trace:\033[0m\n");
+            // Show unique files in the trace
+            for (int i = 0; i < viewer->entry_count; i++) {
+                int already_shown = 0;
+                for (int j = 0; j < i; j++) {
+                    if (strcmp(viewer->entries[i].filename, viewer->entries[j].filename) == 0) {
+                        already_shown = 1;
+                        break;
+                    }
+                }
+                if (!already_shown) {
+                    printf("  - %s\n", viewer->entries[i].filename);
+                }
+            }
+        }
         return;
     }
     
