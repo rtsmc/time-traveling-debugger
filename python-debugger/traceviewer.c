@@ -40,6 +40,9 @@ typedef struct {
     int breakpoint_count;
 } TraceViewer;
 
+// Global pointer for autocomplete (needs access to trace files)
+static TraceViewer *g_viewer = NULL;
+
 // Forward declarations
 void print_current_entry(TraceViewer *viewer);
 
@@ -624,42 +627,105 @@ void print_help() {
 }
 
 #if HAS_READLINE
-// Filename completion support - only .py files
+// Filename completion support - shows .py files from trace and current directory
 static char* filename_generator(const char* text, int state) {
     static DIR *dir = NULL;
     static int len;
+    static int trace_index = 0;
+    static int seen_count = 0;
+    static char seen_files[100][256];  // Track files we've already shown
     struct dirent *entry;
     
     if (!state) {
-        // First call - open directory
+        // First call - reset state
         if (dir) {
             closedir(dir);
+            dir = NULL;
         }
-        dir = opendir(".");
+        trace_index = 0;
+        seen_count = 0;
         len = strlen(text);
     }
     
-    if (!dir) {
-        return NULL;
-    }
-    
-    // Read directory entries
-    while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
-        size_t name_len = strlen(name);
-        
-        // Only .py files
-        if (name_len > 3 && strcmp(name + name_len - 3, ".py") == 0) {
-            // Check if it matches the text
-            if (strncmp(name, text, len) == 0) {
-                return strdup(name);
+    // Phase 1: Suggest files from trace (most relevant)
+    if (g_viewer && trace_index < g_viewer->entry_count) {
+        while (trace_index < g_viewer->entry_count) {
+            const char *trace_file = g_viewer->entries[trace_index].filename;
+            trace_index++;
+            
+            // Get basename
+            const char *basename = get_basename(trace_file);
+            size_t name_len = strlen(basename);
+            
+            // Check if it's a .py file
+            if (name_len > 3 && strcmp(basename + name_len - 3, ".py") == 0) {
+                // Check if it matches the text
+                if (strncmp(basename, text, len) == 0) {
+                    // Check if we've already shown this file
+                    int already_seen = 0;
+                    for (int i = 0; i < seen_count; i++) {
+                        if (strcmp(seen_files[i], basename) == 0) {
+                            already_seen = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (!already_seen) {
+                        // Add to seen list
+                        if (seen_count < 100) {
+                            strncpy(seen_files[seen_count], basename, 255);
+                            seen_files[seen_count][255] = '\0';
+                            seen_count++;
+                        }
+                        return strdup(basename);
+                    }
+                }
             }
         }
     }
     
+    // Phase 2: Suggest files from current directory
+    if (!dir) {
+        dir = opendir(".");
+    }
+    
+    if (dir) {
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            size_t name_len = strlen(name);
+            
+            // Only .py files
+            if (name_len > 3 && strcmp(name + name_len - 3, ".py") == 0) {
+                // Check if it matches the text
+                if (strncmp(name, text, len) == 0) {
+                    // Check if we've already shown this file
+                    int already_seen = 0;
+                    for (int i = 0; i < seen_count; i++) {
+                        if (strcmp(seen_files[i], name) == 0) {
+                            already_seen = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (!already_seen) {
+                        // Add to seen list
+                        if (seen_count < 100) {
+                            strncpy(seen_files[seen_count], name, 255);
+                            seen_files[seen_count][255] = '\0';
+                            seen_count++;
+                        }
+                        return strdup(name);
+                    }
+                }
+            }
+        }
+        
+        // Done with directory
+        closedir(dir);
+        dir = NULL;
+    }
+    
     // No more matches
-    closedir(dir);
-    dir = NULL;
     return NULL;
 }
 
@@ -774,10 +840,23 @@ int main(int argc, char *argv[]) {
 
     printf("✓ Loaded %d execution steps\n", viewer.entry_count);
     
+    // Set global pointer for autocomplete access
+    g_viewer = &viewer;
+    
     // Initialize readline for command history and tab completion
     init_readline();
     
     print_help();
+    
+#if HAS_READLINE
+    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete .py files)\n");
+#else
+    printf("\n\033[1;33m⚠ Tab completion not available\033[0m\n");
+    printf("  To enable tab completion for .py files:\n");
+    printf("  \033[1;36mFedora/RHEL:\033[0m  sudo dnf install readline-devel\n");
+    printf("  \033[1;36mDebian/Ubuntu:\033[0m sudo apt-get install libreadline-dev\n");
+    printf("  Then rebuild: \033[1;32mmake rebuild\033[0m\n");
+#endif
     
     // Print first entry
     print_current_entry(&viewer);
