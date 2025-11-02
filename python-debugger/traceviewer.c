@@ -783,6 +783,13 @@ void init_readline() {
     // Set up tab completion
     rl_attempted_completion_function = command_completion;
     
+    // Set completer delimiters to space, tab, and newline only
+    // This prevents readline from breaking on special characters
+    rl_completer_word_break_characters = " \t\n";
+    
+    // Configure readline behavior
+    rl_bind_key('\t', rl_complete);  // Ensure TAB triggers completion
+    
     // Load history from file
     char* home = getenv("HOME");
     if (home) {

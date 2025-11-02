@@ -95,6 +95,10 @@ Set breakpoints before running your program.
         try:
             files = os.listdir('.')
             py_files = [f for f in files if f.endswith('.py') and f.startswith(text)]
+            
+            # Sort .py files alphabetically for consistent ordering
+            py_files.sort()
+            
             return py_files
         except:
             return []
