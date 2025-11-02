@@ -784,6 +784,10 @@ int main(int argc, char *argv[]) {
 
     char *last_command = NULL;
     while (1) {
+        // Declare input buffer at function scope so it's accessible after #if/#else
+        char input[MAX_LINE_LENGTH];
+        char *cmd;
+        
 #if HAS_READLINE
         // Build prompt with user-friendly 1-based position
         char prompt[64];
@@ -800,7 +804,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Trim whitespace
-        char *cmd = line;
+        cmd = line;
         while (isspace((unsigned char)*cmd)) cmd++;
         
         // Handle empty input - repeat last command
@@ -824,7 +828,6 @@ int main(int argc, char *argv[]) {
         }
         
         // Copy command to input buffer for processing
-        char input[MAX_LINE_LENGTH];
         strncpy(input, cmd, MAX_LINE_LENGTH - 1);
         input[MAX_LINE_LENGTH - 1] = '\0';
         
@@ -838,7 +841,6 @@ int main(int argc, char *argv[]) {
                viewer.current_entry + 1, viewer.entry_count);
         fflush(stdout);
         
-        char input[MAX_LINE_LENGTH];
         if (!fgets(input, sizeof(input), stdin)) {
             break;
         }
@@ -850,7 +852,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Trim whitespace
-        char *cmd = input;
+        cmd = input;
         while (isspace((unsigned char)*cmd)) cmd++;
         
         // Handle empty input - repeat last command
