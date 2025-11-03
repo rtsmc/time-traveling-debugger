@@ -4,14 +4,10 @@
 #include <ctype.h>
 #include <dirent.h>
 
-// Readline support (optional)
-#ifndef NO_READLINE
+// Readline support (mandatory)
 #include <readline/readline.h>
 #include <readline/history.h>
 #define HAS_READLINE 1
-#else
-#define HAS_READLINE 0
-#endif
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
@@ -626,7 +622,6 @@ void print_help() {
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
-#if HAS_READLINE
 // Filename completion support - shows .py files from trace and current directory
 static char* filename_generator(const char* text, int state) {
     static DIR *dir = NULL;
@@ -809,16 +804,7 @@ void save_readline_history() {
         write_history(history_file);
     }
 }
-#else
-// Dummy functions when readline is not available
-void init_readline() {
-    // No-op
-}
 
-void save_readline_history() {
-    // No-op
-}
-#endif
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -855,26 +841,16 @@ int main(int argc, char *argv[]) {
     
     print_help();
     
-#if HAS_READLINE
-    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete .py files)\n");
-#else
-    printf("\n\033[1;33m⚠ Tab completion not available\033[0m\n");
-    printf("  To enable tab completion for .py files:\n");
-    printf("  \033[1;36mFedora/RHEL:\033[0m  sudo dnf install readline-devel\n");
-    printf("  \033[1;36mDebian/Ubuntu:\033[0m sudo apt-get install libreadline-dev\n");
-    printf("  Then rebuild: \033[1;32mmake rebuild\033[0m\n");
-#endif
+    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete commands and .py files)\n");
     
     // Print first entry
     print_current_entry(&viewer);
 
     char *last_command = NULL;
     while (1) {
-        // Declare input buffer at function scope so it's accessible after #if/#else
         char input[MAX_LINE_LENGTH];
         char *cmd;
         
-#if HAS_READLINE
         // Build prompt with user-friendly 1-based position
         char prompt[64];
         snprintf(prompt, sizeof(prompt), "\n\033[1;32m[%d/%d]\033[0m > ", 
@@ -921,43 +897,6 @@ int main(int argc, char *argv[]) {
         if (cmd == line) {
             free(line);
         }
-#else
-        // Basic input without readline
-        printf("\n\033[1;32m[%d/%d]\033[0m > ", 
-               viewer.current_entry + 1, viewer.entry_count);
-        fflush(stdout);
-        
-        if (!fgets(input, sizeof(input), stdin)) {
-            break;
-        }
-        
-        // Remove trailing newline
-        size_t len = strlen(input);
-        if (len > 0 && input[len - 1] == '\n') {
-            input[len - 1] = '\0';
-        }
-        
-        // Trim whitespace
-        cmd = input;
-        while (isspace((unsigned char)*cmd)) cmd++;
-        
-        // Handle empty input - repeat last command
-        if (strlen(cmd) == 0) {
-            if (last_command) {
-                strncpy(input, last_command, MAX_LINE_LENGTH - 1);
-                input[MAX_LINE_LENGTH - 1] = '\0';
-                cmd = input;
-            } else {
-                continue;
-            }
-        } else {
-            // Update last command
-            if (last_command) {
-                free(last_command);
-            }
-            last_command = strdup(cmd);
-        }
-#endif
         
         // Point cmd to input buffer for command processing
         cmd = input;

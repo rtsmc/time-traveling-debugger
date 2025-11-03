@@ -12,22 +12,16 @@ YELLOW = \033[1;33m
 CYAN = \033[1;36m
 RESET = \033[0m
 
-# Check if readline is available by trying to compile a test
-READLINE_CHECK := $(shell echo '\#include <readline/readline.h>\nint main(){readline(0);return 0;}' | $(CC) -x c - -lreadline -o /dev/null 2>/dev/null && echo yes)
+# Check if readline is available by checking for the header and library
+READLINE_CHECK := $(shell pkg-config --exists readline 2>/dev/null && echo yes || (echo '\#include <readline/readline.h>\nint main(){return 0;}' | $(CC) -x c - -lreadline 2>/dev/null && echo yes))
 
 # Check if Python development headers are available
 PYTHON_CHECK := $(shell $(PYTHON) -c "import sysconfig" 2>/dev/null && echo yes)
 
-# Set flags based on what's available
-ifeq ($(READLINE_CHECK),yes)
-    READLINE_FLAGS = -lreadline
-    READLINE_STATUS = with readline support
-else
-    READLINE_FLAGS = -DNO_READLINE
-    READLINE_STATUS = without readline (basic version)
-endif
+# Readline is mandatory
+READLINE_FLAGS = -lreadline
 
-.PHONY: all clean test help install check-deps verify basic rebuild
+.PHONY: all clean test help install check-deps verify rebuild
 
 # Default target - build everything
 all: check-deps
@@ -67,10 +61,13 @@ else
 	@echo "$(GREEN)✓$(RESET) python3-dev found"
 endif
 ifneq ($(READLINE_CHECK),yes)
-	@echo "$(YELLOW)⚠$(RESET)  readline not found (will build basic version)"
-	@echo "$(YELLOW)   For better CLI experience, install readline:$(RESET)"
-	@echo "     Fedora/RHEL:  sudo dnf install readline-devel"
-	@echo "     Debian/Ubuntu: sudo apt-get install libreadline-dev"
+	@echo "$(RED)✗ readline not found (required)$(RESET)"
+	@echo "$(YELLOW)Install readline development library:$(RESET)"
+	@echo "  Fedora/RHEL:  sudo dnf install readline-devel"
+	@echo "  Debian/Ubuntu: sudo apt-get install libreadline-dev"
+	@echo "  Arch:          sudo pacman -S readline"
+	@echo "  macOS:         brew install readline"
+	@exit 1
 else
 	@echo "$(GREEN)✓$(RESET) readline found"
 endif
@@ -78,7 +75,7 @@ endif
 
 # Build traceviewer
 traceviewer: traceviewer.c
-	@echo "$(CYAN)Building traceviewer ($(READLINE_STATUS))...$(RESET)"
+	@echo "$(CYAN)Building traceviewer (with readline support)...$(RESET)"
 	@$(CC) -o traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS) 2>&1 | \
 		grep -v "warning:" | grep -v "note:" || true
 	@chmod +x traceviewer 2>/dev/null || true
@@ -133,22 +130,6 @@ verify:
 		echo "$(RED)Build verification failed with $$ERRORS error(s)$(RESET)"; \
 		exit 1; \
 	fi
-
-# Build without readline (fallback)
-basic:
-	@echo "$(CYAN)Building basic version (no readline)...$(RESET)"
-	@echo ""
-	@$(CC) -o traceviewer traceviewer.c $(CFLAGS) -DNO_READLINE 2>&1 | \
-		grep -v "warning:" | grep -v "note:" || true
-	@chmod +x traceviewer 2>/dev/null || true
-	@if [ -x traceviewer ]; then \
-		echo "$(GREEN)✓ Basic traceviewer built successfully$(RESET)"; \
-	else \
-		echo "$(RED)✗ Failed to build traceviewer$(RESET)"; \
-		exit 1; \
-	fi
-	@echo ""
-	@$(MAKE) -s cdebugger
 
 # Clean build artifacts
 clean:
@@ -215,7 +196,6 @@ help:
 	@echo "  make all          - Same as 'make'"
 	@echo "  make traceviewer  - Build only traceviewer"
 	@echo "  make cdebugger    - Build only Python C extension"
-	@echo "  make basic        - Build without readline"
 	@echo "  make rebuild      - Clean and rebuild everything"
 	@echo ""
 	@echo "$(GREEN)Utility Targets:$(RESET)"
@@ -230,7 +210,7 @@ help:
 	@echo "  • gcc              (C compiler)"
 	@echo "  • python3          (Python interpreter)"
 	@echo "  • python3-dev      (Python development headers)"
-	@echo "  • readline-devel   (optional, for better CLI)"
+	@echo "  • readline-devel   (REQUIRED for tab completion)"
 	@echo ""
 	@echo "$(GREEN)Install Dependencies:$(RESET)"
 	@echo "  $(CYAN)Fedora/RHEL:$(RESET)"

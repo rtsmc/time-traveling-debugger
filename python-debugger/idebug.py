@@ -303,28 +303,29 @@ def launch_trace_viewer(trace_file):
     if needs_compile:
         print(f"\n{Colors.YELLOW}Compiling trace viewer...{Colors.RESET}")
         
-        # Try with readline first
+        # Compile with readline (mandatory)
         result = subprocess.run(
             ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2", "-lreadline"],
             capture_output=True,
             text=True
         )
         
-        # If readline fails, try without it
-        if result.returncode != 0 and "readline" in result.stderr:
-            print(f"{Colors.YELLOW}Readline not found, building basic version...{Colors.RESET}")
-            result = subprocess.run(
-                ["gcc", "-o", "traceviewer", "traceviewer.c", "-Wall", "-O2", "-DNO_READLINE"],
-                capture_output=True,
-                text=True
-            )
-        
         if result.returncode != 0:
             print(f"{Colors.RED}Failed to compile traceviewer.{Colors.RESET}")
             print(f"Error: {result.stderr}")
-            print(f"\nYou can manually compile with:")
-            print(f"  {Colors.BOLD}gcc -o traceviewer traceviewer.c -Wall -O2 -lreadline{Colors.RESET}")
-            print(f"  or: {Colors.BOLD}make{Colors.RESET}")
+            
+            # Check if the error is related to readline
+            if "readline" in result.stderr.lower():
+                print(f"\n{Colors.RED}✗ Readline library is required but not found!{Colors.RESET}")
+                print(f"\n{Colors.YELLOW}Please install readline development library:{Colors.RESET}")
+                print(f"  {Colors.CYAN}Fedora/RHEL:{Colors.RESET}  sudo dnf install readline-devel")
+                print(f"  {Colors.CYAN}Debian/Ubuntu:{Colors.RESET} sudo apt-get install libreadline-dev")
+                print(f"  {Colors.CYAN}macOS:{Colors.RESET}         brew install readline")
+            else:
+                print(f"\nYou can manually compile with:")
+                print(f"  {Colors.BOLD}gcc -o traceviewer traceviewer.c -Wall -O2 -lreadline{Colors.RESET}")
+                print(f"  or: {Colors.BOLD}make{Colors.RESET}")
+            
             print(f"Then run: {Colors.BOLD}./traceviewer {trace_file}{Colors.RESET}")
             return
         
