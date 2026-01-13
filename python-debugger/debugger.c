@@ -428,7 +428,7 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     } else {
         Py_INCREF(locals);
     }
-    COMPAT_Py_XDECREF_Code(code_obj);
+//     COMPAT_Py_XDECREF_Code(code_obj);
 //    #else
 //        if (frame->f_locals == NULL) {
             // Create the locals dict
