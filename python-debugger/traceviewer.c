@@ -229,12 +229,12 @@ void continue_to_breakpoint(TraceViewer *viewer) {
         return;
     }
     
+    // Initialize previous state to current entry before searching
+    update_variable_state(viewer, viewer->current_entry);
+    
     // Search forward from current position
     for (int i = viewer->current_entry + 1; i < viewer->entry_count; i++) {
-        // Update variable state for watchpoint detection
-        update_variable_state(viewer, i);
-        
-        // Check watchpoints first
+        // Check watchpoints first (compares prev_vars with entry i)
         char triggered_var[256];
         char trigger_type[64];
         WatchpointType wp_type;
@@ -257,6 +257,9 @@ void continue_to_breakpoint(TraceViewer *viewer) {
             print_current_entry(viewer);
             return;
         }
+        
+        // Update variable state for next iteration
+        update_variable_state(viewer, i);
     }
     
     // No more breakpoints or watchpoints - go to end
@@ -276,11 +279,16 @@ void reverse_continue_to_breakpoint(TraceViewer *viewer) {
     }
     
     // Search backward from current position
+    // For reverse, we need to check each position with the previous position as context
     for (int i = viewer->current_entry - 1; i >= 0; i--) {
-        // Update variable state for watchpoint detection
-        update_variable_state(viewer, i);
+        // Initialize previous state to one before i (or empty if i is 0)
+        if (i > 0) {
+            update_variable_state(viewer, i - 1);
+        } else {
+            viewer->prev_var_count = 0;  // No previous state for first entry
+        }
         
-        // Check watchpoints first
+        // Check watchpoints first (compares prev_vars with entry i)
         char triggered_var[256];
         char trigger_type[64];
         WatchpointType wp_type;
