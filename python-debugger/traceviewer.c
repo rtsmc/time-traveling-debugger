@@ -239,17 +239,10 @@ void continue_to_breakpoint(TraceViewer *viewer) {
         char trigger_type[64];
         WatchpointType wp_type;
         if (check_watchpoint_triggered(viewer, i, triggered_var, trigger_type, &wp_type)) {
-            // Stop at i-1 where the write/read happened, not i where we see the result
-            // But only if not a read-only watchpoint (reads happen at current line)
-            int stop_at = i;
-            if (strstr(trigger_type, "write") != NULL) {
-                // Write detected - stop at previous line where write occurred
-                if (i > 0) {
-                    stop_at = i - 1;
-                }
-            }
-            
-            viewer->current_entry = stop_at;
+            // For writes: the write happened at line shown in entry i-1, but we can only detect  
+            // it at entry i (where we see the new value). We stop at entry i.
+            // This means line number will be one past the write, but variables will show new value.
+            viewer->current_entry = i;
             printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
             printf("\033[1;35m👁 WATCHPOINT HIT\033[0m\n");
             printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
@@ -303,17 +296,8 @@ void reverse_continue_to_breakpoint(TraceViewer *viewer) {
         char trigger_type[64];
         WatchpointType wp_type;
         if (check_watchpoint_triggered(viewer, i, triggered_var, trigger_type, &wp_type)) {
-            // Stop at i-1 where the write/read happened, not i where we see the result
-            // But only if not a read-only watchpoint (reads happen at current line)
-            int stop_at = i;
-            if (strstr(trigger_type, "write") != NULL) {
-                // Write detected - stop at previous line where write occurred
-                if (i > 0) {
-                    stop_at = i - 1;
-                }
-            }
-            
-            viewer->current_entry = stop_at;
+            // Stop at entry i where we detected the change
+            viewer->current_entry = i;
             printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
             printf("\033[1;35m⟲ WATCHPOINT HIT (REVERSE)\033[0m\n");
             printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
