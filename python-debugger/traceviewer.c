@@ -491,9 +491,59 @@ void print_help() {
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
     printf("  \033[1;32mjump <line>\033[0m   - Jump to first occurrence of source line\n");
+    printf("  \033[1;32meval <expression>\033[0m   - Evaluates a python command and prints the result\n");
     printf("\n\033[1;35mOther:\033[0m\n");
     printf("  \033[1;32mhelp\033[0m           - Show this help\n");
     printf("  \033[1;32mquit\033[0m or \033[1;32mq\033[0m     - Exit debugger\n");
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+}
+
+void eval_expression(TraceViewer *viewer, const char *expression) {
+    if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
+        printf("\033[1;31m✗ No current entry\033[0m\n");
+        return;
+    }
+
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+
+    if (strlen(entry->variables) == 0) {
+        printf("\033[1;31m✗ No variables available at current execution point\033[0m\n");
+        return;
+    }
+
+    // Build Python one-liner that sets variables and evaluates expression
+    char command[8192];
+    int pos = snprintf(command, sizeof(command), "python3 -c \"");
+
+    // Add variables
+    pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+
+    // Evaluate and print
+    pos += snprintf(command + pos, sizeof(command) - pos,
+                   "__r=%s; print(f'Result: {__r}'); print(f'Type: {type(__r).__name__}')\" 2>&1",
+                   expression);
+
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+
+    FILE *output = popen(command, "r");
+    if (output) {
+        char line[MAX_LINE_LENGTH];
+        int has_output = 0;
+        while (fgets(line, sizeof(line), output)) {
+            printf("%s", line);
+            has_output = 1;
+        }
+
+        int status = pclose(output);
+        if (!has_output || WEXITSTATUS(status) != 0) {
+            printf("\033[1;31m✗ Evaluation failed\033[0m\n");
+        }
+    } else {
+        printf("\033[1;31m✗ Failed to execute Python\033[0m\n");
+    }
+
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
@@ -505,13 +555,13 @@ int main(int argc, char *argv[]) {
     }
 
     TraceViewer viewer;
-    
+
     printf("\033[1;36m╔════════════════════════════════════════════════════════╗\033[0m\n");
     printf("\033[1;36m║         Python Time-Traveling Debugger v1.0          ║\033[0m\n");
     printf("\033[1;36m╚════════════════════════════════════════════════════════╝\033[0m\n\n");
-    
+
     printf("Loading trace file: %s\n", argv[1]);
-    
+
     if (!read_trace_file(argv[1], &viewer)) {
         return 1;
     }
@@ -702,6 +752,18 @@ int main(int argc, char *argv[]) {
         // Handle 'q' or 'quit' command
         else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
             break;
+        }
+        // Eval
+        else if (strncmp(cmd, "eval ", 5) == 0) {
+            char *expression = cmd + 5;
+            while (isspace((unsigned char)*expression)) expression++;
+            if (strlen(expression) > 0) {
+                eval_expression(&viewer, expression);
+            } else {
+                printf("\033[1;31m✗ Usage: eval <expression>\033[0m\n");
+                printf("Example: eval x + y\n");
+                printf("Example: eval len(my_list)\n");
+            }
         }
         else {
             printf("\033[1;31m✗ Unknown command. Type 'help' for available commands\033[0m\n");
