@@ -498,6 +498,49 @@ void print_help() {
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
+void extract_globals(const char *filename, char *code_buf, size_t buf_size) {
+    FILE *f = fopen(filename, "r");
+    if (!f) return;
+
+    char line[1024];
+    size_t pos = 0;
+
+    while (fgets(line, sizeof(line), f) && pos < buf_size - 100) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+
+        // if line starts with whitespace, skip it
+        if (strlen(line) > 0 && (line[0] == ' ' || line[0] == '\t')) {
+            continue;
+        }
+
+        // Skip empty lines and comments
+        if (strlen(line) == 0 || line[0] == '#') {
+            continue;
+        }
+
+        char *equals = strchr(line, '=');
+        if (equals && equals > line && *(equals-1) != '!' && *(equals-1) != '=' && 
+            *(equals-1) != '<' && *(equals-1) != '>' && *(equals+1) != '=') {
+            // top-level assignment, include it
+            char *ptr = line;
+            while (*ptr && pos < buf_size - 10) {
+                if (*ptr == '\'') {
+                    pos += snprintf(code_buf + pos, buf_size - pos, "'\\''");
+                } else {
+                    code_buf[pos++] = *ptr;
+                }
+                ptr++;
+            }
+            code_buf[pos++] = ';';
+            code_buf[pos++] = ' ';
+        }
+    }
+
+    code_buf[pos] = '\0';
+    fclose(f);
+}
+
 void eval_expression(TraceViewer *viewer, const char *expression) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
         printf("\033[1;31m✗ No current entry\033[0m\n");
@@ -506,17 +549,26 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
-    if (strlen(entry->variables) == 0) {
-        printf("\033[1;31m✗ No variables available at current execution point\033[0m\n");
-        return;
-    }
+    // if (strlen(entry->variables) == 0) {
+    //     printf("\033[1;31m✗ No variables available at current execution point\033[0m\n");
+    //     return;
+    // }
+
+    char globals[8192] = {0};
+    extract_globals(entry->filename, globals, sizeof(globals));
 
     // Build Python one-liner that sets variables and evaluates expression
     char command[8192];
     int pos = snprintf(command, sizeof(command), "python3 -c \"");
 
-    // Add variables
-    pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+    if (strlen(globals) > 0) { // add globals
+        pos += snprintf(command + pos, sizeof(command) - pos, "%s ", globals);  // <-- AND HERE
+    }
+
+    if(strlen(entry->variables) > 0){
+        // Add variables
+        pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+    }
 
     // Evaluate and print
     pos += snprintf(command + pos, sizeof(command) - pos,
