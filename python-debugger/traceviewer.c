@@ -2,10 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
-#define MAX_FIELD_LENGTH 2048
+#define MAX_FIELD_LENGTH 25000
 #define MAX_BREAKPOINTS 100
 
 typedef struct {
@@ -506,18 +507,34 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
-    char command[8192];
-    int pos = snprintf(command, sizeof(command), "python3 -c \"");
+    const char *temp_file = "trace_eval_temp.py";
+    FILE *f = fopen(temp_file, "w");
+    if (!f) {
+        printf("\033[1;31m✗ Failed to create temp file\033[0m\n");
+        return;
+    }
+
+    // char command[8192];
+    // int pos = snprintf(command, sizeof(command), "python3 -c \"");
 
     if(strlen(entry->variables) > 0){
         // Add variables
-        pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+        // pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+        fprintf(f, "%s\n", entry->variables);
     }
 
+    fprintf(f, "__r=%s\n", expression);
+    fprintf(f, "print(f'Result: {__r}')\n");
+    fprintf(f, "print(f'Type: {type(__r).__name__}')\n");
+    fclose(f);
+
     // Evaluate and print
-    pos += snprintf(command + pos, sizeof(command) - pos,
-                   "__r=%s; print(f'Result: {__r}'); print(f'Type: {type(__r).__name__}')\" 2>&1",
-                   expression);
+    // pos += snprintf(command + pos, sizeof(command) - pos,
+    //                "__r=%s; print(f'Result: {__r}'); print(f'Type: {type(__r).__name__}')\" 2>&1",
+    //                expression);
+
+    char command[512];
+    snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
 
     printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
     printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
@@ -541,6 +558,8 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     }
 
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+
+    unlink(temp_file);
 }
 
 int main(int argc, char *argv[]) {

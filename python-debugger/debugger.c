@@ -191,6 +191,10 @@ write_variables(FILE *fp, PyObject *locals)
             continue;
         }
 
+        if (strcmp(var_name, "__builtins__") == 0) {
+            continue;
+        }
+
         PyObject *repr = PyObject_Repr(value);
         const char *var_value = "";
         if (repr != NULL) {
