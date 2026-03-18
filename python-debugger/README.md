@@ -4,18 +4,18 @@ A powerful interactive debugger with breakpoints, step back, and time-travel cap
 
 ## 🚀 Quick Start
 
-### 1. Build (One-Time Setup)
+### 1. Build
 
 ```bash
 # Build the C extension and trace viewer
-python3 setup.py build_ext --inplace
-gcc -o traceviewer traceviewer.c -Wall -O2
+uv sync
+uv run make
 ```
 
 ### 2. Debug Any Python File
 
 ```bash
-python3 idebug.py your_script.py
+uv run idebug.py your_script.py
 ```
 
 ### 3. Set Breakpoints & Run

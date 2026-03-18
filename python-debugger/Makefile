@@ -3,7 +3,7 @@
 
 CC = gcc
 CFLAGS = -Wall -O2
-PYTHON = python3
+PYTHON ?= python
 
 # Colors for output
 RED = \033[1;31m
@@ -30,8 +30,6 @@ all: check-deps
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
 	@$(MAKE) -s traceviewer
-	@echo ""
-	@$(MAKE) -s cdebugger
 	@echo ""
 	@$(MAKE) -s verify
 	@echo ""
@@ -83,23 +81,6 @@ traceviewer: traceviewer.c
 		echo "$(GREEN)✓ traceviewer built successfully$(RESET)"; \
 	else \
 		echo "$(RED)✗ Failed to build traceviewer$(RESET)"; \
-		exit 1; \
-	fi
-
-# Build cdebugger Python extension
-cdebugger: debugger.c setup.py
-	@echo "$(CYAN)Building cdebugger Python C extension...$(RESET)"
-	@$(PYTHON) setup.py build_ext --inplace 2>&1 | \
-		grep -v "warning:" | grep -v "note:" | grep -E "(running|building|creating|copying|error|Error)" || true
-	@sleep 0.5
-	@if ls cdebugger*.so >/dev/null 2>&1; then \
-		echo "$(GREEN)✓ cdebugger extension built successfully$(RESET)"; \
-		ls cdebugger*.so | while read f; do \
-			echo "  Created: $$f"; \
-		done; \
-	else \
-		echo "$(RED)✗ Failed to build cdebugger extension$(RESET)"; \
-		echo "$(YELLOW)Make sure python3-dev is installed!$(RESET)"; \
 		exit 1; \
 	fi
 
@@ -195,7 +176,6 @@ help:
 	@echo "  make              - Build everything (recommended)"
 	@echo "  make all          - Same as 'make'"
 	@echo "  make traceviewer  - Build only traceviewer"
-	@echo "  make cdebugger    - Build only Python C extension"
 	@echo "  make rebuild      - Clean and rebuild everything"
 	@echo ""
 	@echo "$(GREEN)Utility Targets:$(RESET)"
