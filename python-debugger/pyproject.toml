@@ -14,3 +14,9 @@ py-modules = ["idebug"]
 ext-modules = [
     { name = "cdebugger", sources = ["debugger.c"], extra-compile-args = ["-O3"] }
 ]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.38.4",
+    "ruff>=0.15.7",
+]

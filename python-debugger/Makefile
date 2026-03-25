@@ -74,7 +74,8 @@ endif
 # Build traceviewer
 traceviewer: traceviewer.c
 	@echo "$(CYAN)Building traceviewer (with readline support)...$(RESET)"
-	@$(CC) -o traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS) 2>&1 | \
+	@mkdir -p build
+	@$(CC) -o build/traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS) 2>&1 | \
 		grep -v "warning:" | grep -v "note:" || true
 	@chmod +x traceviewer 2>/dev/null || true
 	@if [ -x traceviewer ]; then \
@@ -115,9 +116,6 @@ verify:
 # Clean build artifacts
 clean:
 	@echo "$(CYAN)Cleaning build files...$(RESET)"
-	@rm -f traceviewer
-	@rm -f cdebugger*.so
-	@rm -f *.o
 	@rm -rf build/
 	@rm -rf __pycache__/
 	@echo "$(GREEN)✓ Clean complete$(RESET)"
