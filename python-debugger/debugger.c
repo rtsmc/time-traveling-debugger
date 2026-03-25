@@ -180,11 +180,6 @@ write_variables(FILE *fp, PyObject *locals)
     Py_ssize_t pos = 0;
 
     while (PyDict_Next(locals, &pos, &key, &value)) {
-        if (!first) {
-            fprintf(fp, ";");
-        }
-        first = 0;
-
         const char *var_name = PyUnicode_AsUTF8(key);
         if (var_name == NULL) {
             PyErr_Clear();
@@ -194,6 +189,11 @@ write_variables(FILE *fp, PyObject *locals)
         if (strcmp(var_name, "__builtins__") == 0) {
             continue;
         }
+
+        if (!first) {
+            fprintf(fp, ";");
+        }
+        first = 0;
 
         PyObject *repr = PyObject_Repr(value);
         const char *var_value = "";
@@ -213,7 +213,7 @@ write_variables(FILE *fp, PyObject *locals)
 }
 
 static void
-write_globals(FILE *fp, PyObject *globals, int first)
+write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
 {
     if (globals == NULL || !PyDict_Check(globals)) {
         return;
@@ -239,6 +239,10 @@ write_globals(FILE *fp, PyObject *globals, int first)
             strcmp(var_name, "__file__") == 0 ||
             strcmp(var_name, "__cached__") == 0 ||
             var_name[0] == '_') {
+            continue;
+        }
+
+        if (locals != NULL && PyDict_Contains(locals, key)) {
             continue;
         }
 
@@ -501,7 +505,7 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         execution_counter++, filename, lineno, source_line);
 
     int has_locals = write_variables(trace_file, locals);
-    write_globals(trace_file, globals, has_locals);
+    write_globals(trace_file, globals, locals, has_locals);
     fprintf(trace_file, "\n");
     fflush(trace_file);
 

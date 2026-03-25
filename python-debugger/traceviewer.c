@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
@@ -508,18 +509,49 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
     const char *temp_file = "trace_eval_temp.py";
-    FILE *f = fopen(temp_file, "w");
-    if (!f) {
-        printf("\033[1;31m✗ Failed to create temp file\033[0m\n");
+
+    // is an import, just add it to the file and return
+    if(strncmp(expression, "import ", 7) == 0 || strncmp(expression, "from ", 5) == 0){
+        FILE *f = fopen(temp_file, "a");
+        if (!f) {
+            printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
+            return;
+        }
+        long pos_before = ftell(f);
+        fprintf(f, "%s\n", expression);
+        fclose(f);
+
+        char command[512];
+        snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
+        FILE *output = popen(command, "r");
+        int failed = 0;
+
+        if (output) {
+            int status = pclose(output);
+            if (WEXITSTATUS(status) != 0) failed = 1;
+        }
+
+        if (failed) {
+            int fd = open(temp_file, O_WRONLY);
+            ftruncate(fd, pos_before);
+            close(fd);
+            printf("\033[1;31m✗ Import failed\033[0m\n");
+        } else {
+            printf("\033[1;32m✓ Import added to session\033[0m\n\n");
+        }
         return;
     }
 
-    // char command[8192];
-    // int pos = snprintf(command, sizeof(command), "python3 -c \"");
+    // Eval and print
+    FILE *f = fopen(temp_file, "a");
+    if (!f) {
+        printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
+        return;
+    }
 
-    if(strlen(entry->variables) > 0){
-        // Add variables
-        // pos += snprintf(command + pos, sizeof(command) - pos, "%s; ", entry->variables);
+    long pos_before = ftell(f);
+
+    if (strlen(entry->variables) > 0) {
         fprintf(f, "%s\n", entry->variables);
     }
 
@@ -527,11 +559,6 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     fprintf(f, "print(f'Result: {__r}')\n");
     fprintf(f, "print(f'Type: {type(__r).__name__}')\n");
     fclose(f);
-
-    // Evaluate and print
-    // pos += snprintf(command + pos, sizeof(command) - pos,
-    //                "__r=%s; print(f'Result: {__r}'); print(f'Type: {type(__r).__name__}')\" 2>&1",
-    //                expression);
 
     char command[512];
     snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
@@ -543,14 +570,12 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     FILE *output = popen(command, "r");
     if (output) {
         char line[MAX_LINE_LENGTH];
-        int has_output = 0;
         while (fgets(line, sizeof(line), output)) {
             printf("%s", line);
-            has_output = 1;
         }
 
         int status = pclose(output);
-        if (!has_output || WEXITSTATUS(status) != 0) {
+        if (WEXITSTATUS(status) != 0) {
             printf("\033[1;31m✗ Evaluation failed\033[0m\n");
         }
     } else {
@@ -559,7 +584,9 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 
-    unlink(temp_file);
+    int fd = open(temp_file, O_WRONLY);
+    ftruncate(fd, pos_before);
+    close(fd);
 }
 
 int main(int argc, char *argv[]) {
@@ -766,6 +793,7 @@ int main(int argc, char *argv[]) {
         }
         // Handle 'q' or 'quit' command
         else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
+            unlink("trace_eval_temp.py");
             break;
         }
         // Eval
