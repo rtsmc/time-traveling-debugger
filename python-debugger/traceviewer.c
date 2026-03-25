@@ -66,6 +66,8 @@ static TraceViewer *g_viewer = NULL;
 
 // Forward declarations
 void print_current_entry(TraceViewer *viewer);
+void update_variable_state(TraceViewer *viewer, int entry_index);
+int check_watchpoint_triggered(TraceViewer *viewer, int entry_index, char *triggered_var, char *trigger_type, WatchpointType *wp_type);
 
 // Parse a trace line into a TraceEntry
 int parse_trace_line(char *line, TraceEntry *entry) {
