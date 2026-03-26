@@ -75,10 +75,9 @@ endif
 traceviewer: traceviewer.c
 	@echo -e "$(CYAN)Building traceviewer (with readline support)...$(RESET)"
 	@mkdir -p build
-	@$(CC) -o build/traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS) 2>&1 | \
-		grep -v "warning:" | grep -v "note:" || true
-	@chmod +x traceviewer 2>/dev/null || true
-	@if [ -x traceviewer ]; then \
+	$(CC) -o build/traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS)
+	@chmod +x build/traceviewer 2>/dev/null || true
+	@if [ -x build/traceviewer ]; then \
 		echo -e "$(GREEN)✓ traceviewer built successfully$(RESET)"; \
 	else \
 		echo -e "$(RED)✗ Failed to build traceviewer$(RESET)"; \
