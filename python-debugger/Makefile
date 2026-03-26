@@ -25,183 +25,182 @@ READLINE_FLAGS = -lreadline
 
 # Default target - build everything
 all: check-deps
-	@echo "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(CYAN)║         Building Time-Traveling Debugger              ║$(RESET)"
-	@echo "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
-	@echo ""
+	@echo -e "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
+	@echo -e "$(CYAN)║         Building Time-Traveling Debugger               ║$(RESET)"
+	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
+	@echo -e ""
 	@$(MAKE) -s traceviewer
-	@echo ""
+	@echo -e ""
 	@$(MAKE) -s verify
-	@echo ""
-	@echo "$(GREEN)╔════════════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(GREEN)║              Build Complete! 🎉                       ║$(RESET)"
-	@echo "$(GREEN)╚════════════════════════════════════════════════════════╝$(RESET)"
-	@echo ""
-	@echo "$(CYAN)To run the debugger:$(RESET)"
-	@echo "  $(PYTHON) idebug.py test_import_main.py"
-	@echo ""
+	@echo -e ""
+	@echo -e "$(GREEN)╔════════════════════════════════════════════════════════╗$(RESET)"
+	@echo -e "$(GREEN)║              Build Complete! 🎉                        ║$(RESET)"
+	@echo -e "$(GREEN)╚════════════════════════════════════════════════════════╝$(RESET)"
+	@echo -e ""
+	@echo -e "$(CYAN)To run the debugger:$(RESET)"
+	@echo -e "  $(PYTHON) idebug.py test_import_main.py"
+	@echo -e ""
 
 # Check dependencies before building
 check-deps:
-	@echo "$(CYAN)Checking dependencies...$(RESET)"
-	@command -v $(CC) >/dev/null 2>&1 || { echo "$(RED)✗ gcc not found. Please install gcc.$(RESET)"; exit 1; }
-	@echo "$(GREEN)✓$(RESET) gcc found"
-	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "$(RED)✗ python3 not found. Please install python3.$(RESET)"; exit 1; }
-	@echo "$(GREEN)✓$(RESET) python3 found"
+	@echo -e "$(CYAN)Checking dependencies...$(RESET)"
+	@command -v $(CC) >/dev/null 2>&1 || { echo -e "$(RED)✗ gcc not found. Please install gcc.$(RESET)"; exit 1; }
+	@echo -e "$(GREEN)✓$(RESET) gcc found"
+	@command -v $(PYTHON) >/dev/null 2>&1 || { echo -e "$(RED)✗ python3 not found. Please install python3.$(RESET)"; exit 1; }
+	@echo -e "$(GREEN)✓$(RESET) python3 found"
 ifneq ($(PYTHON_CHECK),yes)
-	@echo "$(RED)✗ Python development headers not found$(RESET)"
-	@echo "$(YELLOW)Install python3-dev:$(RESET)"
-	@echo "  Fedora/RHEL:  sudo dnf install python3-devel"
-	@echo "  Debian/Ubuntu: sudo apt-get install python3-dev"
-	@echo "  Arch:          sudo pacman -S python"
+	@echo -e "$(RED)✗ Python development headers not found$(RESET)"
+	@echo -e "$(YELLOW)Install python3-dev:$(RESET)"
+	@echo -e "  Fedora/RHEL:  sudo dnf install python3-devel"
+	@echo -e "  Debian/Ubuntu: sudo apt-get install python3-dev"
+	@echo -e "  Arch:          sudo pacman -S python"
 	@exit 1
 else
-	@echo "$(GREEN)✓$(RESET) python3-dev found"
+	@echo -e "$(GREEN)✓$(RESET) python3-dev found"
 endif
 ifneq ($(READLINE_CHECK),yes)
-	@echo "$(RED)✗ readline not found (required)$(RESET)"
-	@echo "$(YELLOW)Install readline development library:$(RESET)"
-	@echo "  Fedora/RHEL:  sudo dnf install readline-devel"
-	@echo "  Debian/Ubuntu: sudo apt-get install libreadline-dev"
-	@echo "  Arch:          sudo pacman -S readline"
-	@echo "  macOS:         brew install readline"
+	@echo -e "$(RED)✗ readline not found (required)$(RESET)"
+	@echo -e "$(YELLOW)Install readline development library:$(RESET)"
+	@echo -e "  Fedora/RHEL:  sudo dnf install readline-devel"
+	@echo -e "  Debian/Ubuntu: sudo apt-get install libreadline-dev"
+	@echo -e "  Arch:          sudo pacman -S readline"
+	@echo -e "  macOS:         brew install readline"
 	@exit 1
 else
-	@echo "$(GREEN)✓$(RESET) readline found"
+	@echo -e "$(GREEN)✓$(RESET) readline found"
 endif
-	@echo ""
+	@echo -e ""
 
 # Build traceviewer
 traceviewer: traceviewer.c
-	@echo "$(CYAN)Building traceviewer (with readline support)...$(RESET)"
+	@echo -e "$(CYAN)Building traceviewer (with readline support)...$(RESET)"
 	@mkdir -p build
 	@$(CC) -o build/traceviewer traceviewer.c $(CFLAGS) $(READLINE_FLAGS) 2>&1 | \
 		grep -v "warning:" | grep -v "note:" || true
 	@chmod +x traceviewer 2>/dev/null || true
 	@if [ -x traceviewer ]; then \
-		echo "$(GREEN)✓ traceviewer built successfully$(RESET)"; \
+		echo -e "$(GREEN)✓ traceviewer built successfully$(RESET)"; \
 	else \
-		echo "$(RED)✗ Failed to build traceviewer$(RESET)"; \
+		echo -e "$(RED)✗ Failed to build traceviewer$(RESET)"; \
 		exit 1; \
 	fi
 
 # Verify build
 verify:
-	@echo "$(CYAN)Verifying build...$(RESET)"
+	@echo -e "$(CYAN)Verifying build...$(RESET)"
 	@ERRORS=0; \
-	if [ ! -x traceviewer ]; then \
-		echo "$(RED)✗ traceviewer not found or not executable$(RESET)"; \
+	if [ ! -x build/traceviewer ]; then \
+		echo -e "$(RED)✗ traceviewer not found or not executable$(RESET)"; \
 		ERRORS=$$((ERRORS + 1)); \
 	else \
-		echo "$(GREEN)✓$(RESET) traceviewer is ready"; \
+		echo -e "$(GREEN)✓$(RESET) traceviewer is ready"; \
 	fi; \
 	if ! ls cdebugger*.so >/dev/null 2>&1; then \
-		echo "$(RED)✗ cdebugger extension not found$(RESET)"; \
+		echo -e "$(RED)✗ cdebugger extension not found$(RESET)"; \
 		ERRORS=$$((ERRORS + 1)); \
 	else \
-		echo "$(GREEN)✓$(RESET) cdebugger extension is ready"; \
+		echo -e "$(GREEN)✓$(RESET) cdebugger extension is ready"; \
 	fi; \
 	if $(PYTHON) -c "import cdebugger" 2>/dev/null; then \
-		echo "$(GREEN)✓$(RESET) cdebugger module imports correctly"; \
+		echo -e "$(GREEN)✓$(RESET) cdebugger module imports correctly"; \
 	else \
-		echo "$(RED)✗ cdebugger module cannot be imported$(RESET)"; \
+		echo -e "$(RED)✗ cdebugger module cannot be imported$(RESET)"; \
 		ERRORS=$$((ERRORS + 1)); \
 	fi; \
 	if [ $$ERRORS -gt 0 ]; then \
-		echo ""; \
-		echo "$(RED)Build verification failed with $$ERRORS error(s)$(RESET)"; \
+		echo -e ""; \
+		echo -e "$(RED)Build verification failed with $$ERRORS error(s)$(RESET)"; \
 		exit 1; \
 	fi
 
 # Clean build artifacts
 clean:
-	@echo "$(CYAN)Cleaning build files...$(RESET)"
+	@echo -e "$(CYAN)Cleaning build files...$(RESET)"
 	@rm -rf build/
-	@rm -rf __pycache__/
-	@echo "$(GREEN)✓ Clean complete$(RESET)"
+	@echo -e "$(GREEN)✓ Clean complete$(RESET)"
 
 # Build everything from scratch
 rebuild: clean all
 
 # Run tests
 test: all
-	@echo ""
-	@echo "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(CYAN)║                  Running Tests                         ║$(RESET)"
-	@echo "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
-	@echo ""
-	@echo "Test 1: Module import test..."
+	@echo -e ""
+	@echo -e "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
+	@echo -e "$(CYAN)║                  Running Tests                         ║$(RESET)"
+	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
+	@echo -e ""
+	@echo -e "Test 1: Module import test..."
 	@if $(PYTHON) -c "import cdebugger; print('  $(GREEN)✓$(RESET) cdebugger imports correctly')" 2>/dev/null; then :; else \
-		echo "  $(RED)✗$(RESET) cdebugger import failed"; \
+		echo -e "  $(RED)✗$(RESET) cdebugger import failed"; \
 	fi
-	@echo ""
-	@echo "Test 2: Running debugger..."
-	@if echo "r" | $(PYTHON) idebug.py test_clean_simple.py >/dev/null 2>&1; then \
-		echo "  $(GREEN)✓$(RESET) Debugger runs successfully"; \
+	@echo -e ""
+	@echo -e "Test 2: Running debugger..."
+	@if echo -e "r" | $(PYTHON) idebug.py test_clean_simple.py >/dev/null 2>&1; then \
+		echo -e "  $(GREEN)✓$(RESET) Debugger runs successfully"; \
 	else \
-		echo "  $(RED)✗$(RESET) Debugger failed"; \
+		echo -e "  $(RED)✗$(RESET) Debugger failed"; \
 	fi
-	@echo ""
+	@echo -e ""
 	@if [ -f trace.log ]; then \
-		echo "Test 3: Testing show command..."; \
-		if echo -e "show\nq" | ./traceviewer trace.log 2>&1 | grep -q "File:"; then \
-			echo "  $(GREEN)✓$(RESET) Show command works"; \
+		echo -e "Test 3: Testing show command..."; \
+		if echo -e -e "show\nq" | ./traceviewer trace.log 2>&1 | grep -q "File:"; then \
+			echo -e "  $(GREEN)✓$(RESET) Show command works"; \
 		else \
-			echo "  $(RED)✗$(RESET) Show command failed"; \
+			echo -e "  $(RED)✗$(RESET) Show command failed"; \
 		fi; \
-		echo ""; \
-		echo "$(GREEN)All tests completed!$(RESET)"; \
+		echo -e ""; \
+		echo -e "$(GREEN)All tests completed!$(RESET)"; \
 	else \
-		echo "$(YELLOW)⚠ trace.log not found, skipping trace viewer test$(RESET)"; \
+		echo -e "$(YELLOW)⚠ trace.log not found, skipping trace viewer test$(RESET)"; \
 	fi
 
 # Install to system
 install: all
-	@echo "$(CYAN)Installing to /usr/local/bin...$(RESET)"
-	@sudo cp traceviewer /usr/local/bin/ || { echo "$(RED)✗ Installation failed$(RESET)"; exit 1; }
+	@echo -e "$(CYAN)Installing to /usr/local/bin...$(RESET)"
+	@sudo cp traceviewer /usr/local/bin/ || { echo -e "$(RED)✗ Installation failed$(RESET)"; exit 1; }
 	@sudo chmod +x /usr/local/bin/traceviewer
-	@echo "$(GREEN)✓ Installed traceviewer to /usr/local/bin/$(RESET)"
-	@echo ""
-	@echo "$(YELLOW)Note:$(RESET) idebug.py must be run from the project directory"
+	@echo -e "$(GREEN)✓ Installed traceviewer to /usr/local/bin/$(RESET)"
+	@echo -e ""
+	@echo -e "$(YELLOW)Note:$(RESET) idebug.py must be run from the project directory"
 
 # Show help
 help:
-	@echo "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(CYAN)║   Python Time-Traveling Debugger - Build System       ║$(RESET)"
-	@echo "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
-	@echo ""
-	@echo "$(GREEN)Build Targets:$(RESET)"
-	@echo "  make              - Build everything (recommended)"
-	@echo "  make all          - Same as 'make'"
-	@echo "  make traceviewer  - Build only traceviewer"
-	@echo "  make rebuild      - Clean and rebuild everything"
-	@echo ""
-	@echo "$(GREEN)Utility Targets:$(RESET)"
-	@echo "  make clean        - Remove all build files"
-	@echo "  make test         - Build and run tests"
-	@echo "  make verify       - Verify build components"
-	@echo "  make check-deps   - Check build dependencies"
-	@echo "  make install      - Install traceviewer to /usr/local/bin"
-	@echo "  make help         - Show this help message"
-	@echo ""
-	@echo "$(GREEN)Requirements:$(RESET)"
-	@echo "  • gcc              (C compiler)"
-	@echo "  • python3          (Python interpreter)"
-	@echo "  • python3-dev      (Python development headers)"
-	@echo "  • readline-devel   (REQUIRED for tab completion)"
-	@echo ""
-	@echo "$(GREEN)Install Dependencies:$(RESET)"
-	@echo "  $(CYAN)Fedora/RHEL:$(RESET)"
-	@echo "    sudo dnf install gcc python3-devel readline-devel"
-	@echo ""
-	@echo "  $(CYAN)Debian/Ubuntu:$(RESET)"
-	@echo "    sudo apt-get install gcc python3-dev libreadline-dev"
-	@echo ""
-	@echo "  $(CYAN)Arch Linux:$(RESET)"
-	@echo "    sudo pacman -S gcc python readline"
-	@echo ""
-	@echo "$(GREEN)Quick Start:$(RESET)"
-	@echo "  make              # Build everything"
-	@echo "  make test         # Run tests"
-	@echo "  $(PYTHON) idebug.py test_import_main.py  # Run debugger"
-	@echo ""
+	@echo -e "$(CYAN)╔════════════════════════════════════════════════════════╗$(RESET)"
+	@echo -e "$(CYAN)║   Python Time-Traveling Debugger - Build System        ║$(RESET)"
+	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
+	@echo -e ""
+	@echo -e "$(GREEN)Build Targets:$(RESET)"
+	@echo -e "  make              - Build everything (recommended)"
+	@echo -e "  make all          - Same as 'make'"
+	@echo -e "  make traceviewer  - Build only traceviewer"
+	@echo -e "  make rebuild      - Clean and rebuild everything"
+	@echo -e ""
+	@echo -e "$(GREEN)Utility Targets:$(RESET)"
+	@echo -e "  make clean        - Remove all build files"
+	@echo -e "  make test         - Build and run tests"
+	@echo -e "  make verify       - Verify build components"
+	@echo -e "  make check-deps   - Check build dependencies"
+	@echo -e "  make install      - Install traceviewer to /usr/local/bin"
+	@echo -e "  make help         - Show this help message"
+	@echo -e ""
+	@echo -e "$(GREEN)Requirements:$(RESET)"
+	@echo -e "  • gcc              (C compiler)"
+	@echo -e "  • python3          (Python interpreter)"
+	@echo -e "  • python3-dev      (Python development headers)"
+	@echo -e "  • readline-devel   (REQUIRED for tab completion)"
+	@echo -e ""
+	@echo -e "$(GREEN)Install Dependencies:$(RESET)"
+	@echo -e "  $(CYAN)Fedora/RHEL:$(RESET)"
+	@echo -e "    sudo dnf install gcc python3-devel readline-devel"
+	@echo -e ""
+	@echo -e "  $(CYAN)Debian/Ubuntu:$(RESET)"
+	@echo -e "    sudo apt-get install gcc python3-dev libreadline-dev"
+	@echo -e ""
+	@echo -e "  $(CYAN)Arch Linux:$(RESET)"
+	@echo -e "    sudo pacman -S gcc python readline"
+	@echo -e ""
+	@echo -e "$(GREEN)Quick Start:$(RESET)"
+	@echo -e "  make              # Build everything"
+	@echo -e "  make test         # Run tests"
+	@echo -e "  $(PYTHON) idebug.py test_import_main.py  # Run debugger"
+	@echo -e ""
