@@ -1061,6 +1061,189 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     close(fd);
 }
 
+// Filename completion support - shows .py files from trace and current directory
+static char* filename_generator(const char* text, int state) {
+    static DIR *dir = NULL;
+    static int len;
+    static int trace_index = 0;
+    static int seen_count = 0;
+    static char seen_files[100][256];  // Track files we've already shown
+    struct dirent *entry;
+    
+    if (!state) {
+        // First call - reset state
+        if (dir) {
+            closedir(dir);
+            dir = NULL;
+        }
+        trace_index = 0;
+        seen_count = 0;
+        len = strlen(text);
+    }
+    
+    // Phase 1: Suggest files from trace (most relevant)
+    if (g_viewer && trace_index < g_viewer->entry_count) {
+        while (trace_index < g_viewer->entry_count) {
+            const char *trace_file = g_viewer->entries[trace_index].filename;
+            trace_index++;
+            
+            // Get basename
+            const char *basename = get_basename(trace_file);
+            size_t name_len = strlen(basename);
+            
+            // Check if it's a .py file
+            if (name_len > 3 && strcmp(basename + name_len - 3, ".py") == 0) {
+                // Check if it matches the text
+                if (strncmp(basename, text, len) == 0) {
+                    // Check if we've already shown this file
+                    int already_seen = 0;
+                    for (int i = 0; i < seen_count; i++) {
+                        if (strcmp(seen_files[i], basename) == 0) {
+                            already_seen = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (!already_seen) {
+                        // Add to seen list
+                        if (seen_count < 100) {
+                            strncpy(seen_files[seen_count], basename, 255);
+                            seen_files[seen_count][255] = '\0';
+                            seen_count++;
+                        }
+                        return strdup(basename);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Phase 2: Suggest files from current directory
+    if (!dir) {
+        dir = opendir(".");
+    }
+    
+    if (dir) {
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            size_t name_len = strlen(name);
+            
+            // Only .py files
+            if (name_len > 3 && strcmp(name + name_len - 3, ".py") == 0) {
+                // Check if it matches the text
+                if (strncmp(name, text, len) == 0) {
+                    // Check if we've already shown this file
+                    int already_seen = 0;
+                    for (int i = 0; i < seen_count; i++) {
+                        if (strcmp(seen_files[i], name) == 0) {
+                            already_seen = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (!already_seen) {
+                        // Add to seen list
+                        if (seen_count < 100) {
+                            strncpy(seen_files[seen_count], name, 255);
+                            seen_files[seen_count][255] = '\0';
+                            seen_count++;
+                        }
+                        return strdup(name);
+                    }
+                }
+            }
+        }
+        
+        // Done with directory
+        closedir(dir);
+        dir = NULL;
+    }
+    
+    // No more matches
+    return NULL;
+}
+
+// Tab completion support
+static char* command_generator(const char* text, int state) {
+    static int list_index, len;
+    static const char* commands[] = {
+        "n", "next", "back", "b", "break", "list", "clear", "c", "continue",
+        "rc", "show", "summary", "find", "jump", "help", "quit", "q", NULL
+    };
+    
+    if (!state) {
+        list_index = 0;
+        len = strlen(text);
+    }
+    
+    while (commands[list_index]) {
+        const char* name = commands[list_index];
+        list_index++;
+        
+        if (strncmp(name, text, len) == 0) {
+            return strdup(name);
+        }
+    }
+    
+    return NULL;
+}
+
+static char** command_completion(const char* text, int start, int end) {
+    // Don't use default filename completion
+    rl_attempted_completion_over = 1;
+    
+    // Complete commands at the start of the line
+    if (start == 0) {
+        return rl_completion_matches(text, command_generator);
+    }
+    
+    // For arguments, check what command was typed
+    // Get the line buffer to check the command
+    const char *line = rl_line_buffer;
+    
+    // Check if this is 'show' or 'b'/'break' command - complete .py filenames
+    if ((strncmp(line, "show ", 5) == 0 && start >= 5) ||
+        (strncmp(line, "b ", 2) == 0 && start >= 2) ||
+        (strncmp(line, "break ", 6) == 0 && start >= 6)) {
+        return rl_completion_matches(text, filename_generator);
+    }
+    
+    // No completion for other arguments
+    return NULL;
+}
+
+// Initialize readline
+void init_readline() {
+    // Set up tab completion
+    rl_attempted_completion_function = command_completion;
+    
+    // Set completer delimiters to space, tab, and newline only
+    // This prevents readline from breaking on special characters
+    rl_completer_word_break_characters = " \t\n";
+    
+    // Configure readline behavior
+    rl_bind_key('\t', rl_complete);  // Ensure TAB triggers completion
+    
+    // Load history from file
+    char* home = getenv("HOME");
+    if (home) {
+        char history_file[512];
+        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
+        read_history(history_file);
+        stifle_history(1000);  // Limit to 1000 entries
+    }
+}
+
+// Save history on exit
+void save_readline_history() {
+    char* home = getenv("HOME");
+    if (home) {
+        char history_file[512];
+        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
+        write_history(history_file);
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <trace_file>\n", argv[0]);
