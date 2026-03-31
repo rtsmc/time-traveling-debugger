@@ -4,18 +4,18 @@ A powerful interactive debugger with breakpoints, step back, and time-travel cap
 
 ## 🚀 Quick Start
 
-### 1. Build (One-Time Setup)
+### 1. Build
 
 ```bash
 # Build the C extension and trace viewer
-python3 setup.py build_ext --inplace
-gcc -o traceviewer traceviewer.c -Wall -O2
+uv sync
+uv run make
 ```
 
 ### 2. Debug Any Python File
 
 ```bash
-python3 idebug.py your_script.py
+uv run idebug.py your_script.py
 ```
 
 ### 3. Set Breakpoints & Run
@@ -146,7 +146,6 @@ Variables: i=1; total=0
 - **idebug.py** - Interactive debugger (main tool)
 - **debugger.c** - C extension for tracing and breakpoints
 - **traceviewer.c** - Post-execution trace viewer
-- **setup.py** - Build configuration
 
 ### Example Tests
 - **test_clean_simple.py** - Simple function test
@@ -213,46 +212,3 @@ Unlike traditional debuggers:
 - ✅ **Loop awareness** - Breakpoints persist across iterations
 - ✅ **Interactive setup** - Set breakpoints before execution
 - ✅ **Post-mortem** - Explore execution after it completes
-
-## 🐛 Troubleshooting
-
-**"No module named cdebugger"**
-```bash
-python3 setup.py build_ext --inplace
-```
-
-**"gcc: command not found"**
-```bash
-# Ubuntu/Debian
-sudo apt-get install gcc
-
-# macOS
-xcode-select --install
-```
-
-**"Python.h: No such file"**
-```bash
-# Ubuntu/Debian
-sudo apt-get install python3-dev
-```
-
-## 📝 License
-
-Open source - feel free to use and modify!
-
-## 🚀 Get Started Now
-
-```bash
-# 1. Build (one time)
-python3 setup.py build_ext --inplace
-gcc -o traceviewer traceviewer.c -Wall -O2
-
-# 2. Debug any Python file
-python3 idebug.py your_script.py
-
-# 3. Set breakpoints and run!
-> break your_script.py 25
-> run
-```
-
-**Happy debugging! 🎯**

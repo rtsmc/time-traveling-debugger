@@ -492,6 +492,12 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
     } else {
         Py_INCREF(locals);
     }
+//     COMPAT_Py_XDECREF_Code(code_obj);
+//    #else
+//        if (frame->f_locals == NULL) {
+            // Create the locals dict
+//            frame->f_locals = PyDict_New();
+//        }
 
     if (globals == NULL) {
         PyErr_Clear();

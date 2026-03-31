@@ -4,11 +4,19 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
+
+// Readline support (mandatory)
+#include <readline/readline.h>
+#include <readline/history.h>
+#define HAS_READLINE 1
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
 #define MAX_FIELD_LENGTH 25000
 #define MAX_BREAKPOINTS 100
+#define MAX_WATCHPOINTS 50
+#define MAX_VARS 100
 
 typedef struct {
     long exec_order;
@@ -24,16 +32,44 @@ typedef struct {
     int line_number;
 } Breakpoint;
 
+// Watchpoint types
+typedef enum {
+    WATCHPOINT_READ,
+    WATCHPOINT_WRITE,
+    WATCHPOINT_BOTH
+} WatchpointType;
+
+// Watchpoint structure
+typedef struct {
+    char variable[256];
+    WatchpointType type;
+} Watchpoint;
+
+// Variable state for tracking changes
+typedef struct {
+    char name[256];
+    char value[512];
+} VarState;
+
 typedef struct {
     TraceEntry *entries;
     int entry_count;
     int current_entry;
     Breakpoint breakpoints[MAX_BREAKPOINTS];
     int breakpoint_count;
+    Watchpoint watchpoints[MAX_WATCHPOINTS];
+    int watchpoint_count;
+    VarState prev_vars[MAX_VARS];
+    int prev_var_count;
 } TraceViewer;
+
+// Global pointer for autocomplete (needs access to trace files)
+static TraceViewer *g_viewer = NULL;
 
 // Forward declarations
 void print_current_entry(TraceViewer *viewer);
+void update_variable_state(TraceViewer *viewer, int entry_index);
+int check_watchpoint_triggered(TraceViewer *viewer, int entry_index, char *triggered_var, char *trigger_type, WatchpointType *wp_type);
 
 // Parse a trace line into a TraceEntry
 int parse_trace_line(char *line, TraceEntry *entry) {
@@ -187,15 +223,39 @@ void list_breakpoints(TraceViewer *viewer) {
     printf("Total: \033[1;32m%d\033[0m breakpoint(s)\n\n", viewer->breakpoint_count);
 }
 
-// Continue to next breakpoint (forward)
+// Continue to next breakpoint or watchpoint (forward)
 void continue_to_breakpoint(TraceViewer *viewer) {
-    if (viewer->breakpoint_count == 0) {
-        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+    if (viewer->breakpoint_count == 0 && viewer->watchpoint_count == 0) {
+        // No breakpoints or watchpoints set - just jump to end
+        printf("\033[1;33m⚠ No breakpoints or watchpoints set. Jumping to end of trace.\033[0m\n");
+        viewer->current_entry = viewer->entry_count - 1;
+        print_current_entry(viewer);
         return;
     }
     
+    // Initialize previous state to current entry before searching
+    update_variable_state(viewer, viewer->current_entry);
+    
     // Search forward from current position
     for (int i = viewer->current_entry + 1; i < viewer->entry_count; i++) {
+        // Check watchpoints first (compares prev_vars with entry i)
+        char triggered_var[256];
+        char trigger_type[64];
+        WatchpointType wp_type;
+        if (check_watchpoint_triggered(viewer, i, triggered_var, trigger_type, &wp_type)) {
+            // For writes: the write happened at line shown in entry i-1, but we can only detect  
+            // it at entry i (where we see the new value). We stop at entry i.
+            // This means line number will be one past the write, but variables will show new value.
+            viewer->current_entry = i;
+            printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;35m👁 WATCHPOINT HIT\033[0m\n");
+            printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;36mVariable '%s' was %s\033[0m\n", triggered_var, trigger_type);
+            print_current_entry(viewer);
+            return;
+        }
+        
+        // Then check breakpoints
         if (is_at_breakpoint(viewer, i)) {
             viewer->current_entry = i;
             printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
@@ -204,23 +264,53 @@ void continue_to_breakpoint(TraceViewer *viewer) {
             print_current_entry(viewer);
             return;
         }
+        
+        // Update variable state for next iteration
+        update_variable_state(viewer, i);
     }
     
-    // No more breakpoints - go to end
-    printf("\033[1;33m⚠ No more breakpoints ahead. Jumping to end of trace.\033[0m\n");
+    // No more breakpoints or watchpoints - go to end
+    printf("\033[1;33m⚠ No more breakpoints or watchpoints ahead. Jumping to end of trace.\033[0m\n");
     viewer->current_entry = viewer->entry_count - 1;
     print_current_entry(viewer);
 }
 
-// Reverse continue to previous breakpoint (backward)
+// Reverse continue to previous breakpoint or watchpoint (backward)
 void reverse_continue_to_breakpoint(TraceViewer *viewer) {
-    if (viewer->breakpoint_count == 0) {
-        printf("\033[1;33m⚠ No breakpoints set. Use 'b <file> <line>' to set breakpoints.\033[0m\n");
+    if (viewer->breakpoint_count == 0 && viewer->watchpoint_count == 0) {
+        // No breakpoints or watchpoints set - just jump to beginning
+        printf("\033[1;33m⚠ No breakpoints or watchpoints set. Jumping to beginning of trace.\033[0m\n");
+        viewer->current_entry = 0;
+        print_current_entry(viewer);
         return;
     }
     
     // Search backward from current position
+    // For reverse, we need to check each position with the previous position as context
     for (int i = viewer->current_entry - 1; i >= 0; i--) {
+        // Initialize previous state to one before i (or empty if i is 0)
+        if (i > 0) {
+            update_variable_state(viewer, i - 1);
+        } else {
+            viewer->prev_var_count = 0;  // No previous state for first entry
+        }
+        
+        // Check watchpoints first (compares prev_vars with entry i)
+        char triggered_var[256];
+        char trigger_type[64];
+        WatchpointType wp_type;
+        if (check_watchpoint_triggered(viewer, i, triggered_var, trigger_type, &wp_type)) {
+            // Stop at entry i where we detected the change
+            viewer->current_entry = i;
+            printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;35m⟲ WATCHPOINT HIT (REVERSE)\033[0m\n");
+            printf("\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;36mVariable '%s' was %s\033[0m\n", triggered_var, trigger_type);
+            print_current_entry(viewer);
+            return;
+        }
+        
+        // Then check breakpoints
         if (is_at_breakpoint(viewer, i)) {
             viewer->current_entry = i;
             printf("\n\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
@@ -231,10 +321,274 @@ void reverse_continue_to_breakpoint(TraceViewer *viewer) {
         }
     }
     
-    // No more breakpoints - go to beginning
-    printf("\033[1;33m⚠ No more breakpoints behind. Jumping to beginning of trace.\033[0m\n");
+    // No more breakpoints or watchpoints - go to beginning
+    printf("\033[1;33m⚠ No more breakpoints or watchpoints behind. Jumping to beginning of trace.\033[0m\n");
     viewer->current_entry = 0;
     print_current_entry(viewer);
+}
+
+// Parse variables from trace entry
+// Format: var1=value1;var2=value2;...
+void parse_variables(const char *vars_str, VarState *vars, int *count, int max_vars) {
+    *count = 0;
+    if (!vars_str || strlen(vars_str) == 0) {
+        return;
+    }
+    
+    char vars_copy[MAX_FIELD_LENGTH];
+    strncpy(vars_copy, vars_str, MAX_FIELD_LENGTH - 1);
+    vars_copy[MAX_FIELD_LENGTH - 1] = '\0';
+    
+    char *ptr = vars_copy;
+    char *start = ptr;
+    
+    while (*ptr && *count < max_vars) {
+        // Find next semicolon or end
+        if (*ptr == ';' || *(ptr + 1) == '\0') {
+            if (*(ptr + 1) == '\0' && *ptr != ';') {
+                ptr++;
+            }
+            
+            // Extract variable=value pair
+            char temp = *ptr;
+            *ptr = '\0';
+            
+            // Find the '=' sign
+            char *eq = strchr(start, '=');
+            if (eq) {
+                *eq = '\0';
+                strncpy(vars[*count].name, start, sizeof(vars[*count].name) - 1);
+                vars[*count].name[sizeof(vars[*count].name) - 1] = '\0';
+                
+                strncpy(vars[*count].value, eq + 1, sizeof(vars[*count].value) - 1);
+                vars[*count].value[sizeof(vars[*count].value) - 1] = '\0';
+                
+                (*count)++;
+            }
+            
+            *ptr = temp;
+            if (*ptr == ';') {
+                ptr++;
+                start = ptr;
+            } else {
+                break;
+            }
+        } else {
+            ptr++;
+        }
+    }
+}
+
+// Check if variable was written (value changed)
+int variable_written(const char *var_name, VarState *prev_vars, int prev_count, 
+                     VarState *curr_vars, int curr_count) {
+    char *prev_value = NULL;
+    char *curr_value = NULL;
+    
+    // Find in previous state
+    for (int i = 0; i < prev_count; i++) {
+        if (strcmp(prev_vars[i].name, var_name) == 0) {
+            prev_value = prev_vars[i].value;
+            break;
+        }
+    }
+    
+    // Find in current state
+    for (int i = 0; i < curr_count; i++) {
+        if (strcmp(curr_vars[i].name, var_name) == 0) {
+            curr_value = curr_vars[i].value;
+            break;
+        }
+    }
+    
+    // Variable is written if:
+    // 1. It didn't exist before but exists now (new variable)
+    // 2. Its value changed
+    if (!prev_value && curr_value) {
+        return 1;
+    }
+    if (prev_value && curr_value && strcmp(prev_value, curr_value) != 0) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+// Check if variable was read (appears in code)
+int variable_read(const char *var_name, const char *code, VarState *curr_vars, int curr_count) {
+    // First check if variable exists in current state
+    int exists = 0;
+    for (int i = 0; i < curr_count; i++) {
+        if (strcmp(curr_vars[i].name, var_name) == 0) {
+            exists = 1;
+            break;
+        }
+    }
+    
+    if (!exists) {
+        return 0;
+    }
+    
+    // Check if variable name appears in code
+    // We need to be careful to match whole words only
+    const char *ptr = code;
+    int var_len = strlen(var_name);
+    
+    while ((ptr = strstr(ptr, var_name)) != NULL) {
+        // Check if it's a whole word (not part of another identifier)
+        int is_whole_word = 1;
+        
+        // Check character before
+        if (ptr > code) {
+            char before = *(ptr - 1);
+            if (isalnum(before) || before == '_') {
+                is_whole_word = 0;
+            }
+        }
+        
+        // Check character after
+        if (is_whole_word) {
+            char after = *(ptr + var_len);
+            if (isalnum(after) || after == '_') {
+                is_whole_word = 0;
+            }
+        }
+        
+        if (is_whole_word) {
+            return 1;
+        }
+        
+        ptr++;
+    }
+    
+    return 0;
+}
+
+// Add a watchpoint
+void add_watchpoint(TraceViewer *viewer, const char *variable, WatchpointType type) {
+    if (viewer->watchpoint_count >= MAX_WATCHPOINTS) {
+        printf("\033[1;31m✗ Maximum watchpoints (%d) reached\033[0m\n", MAX_WATCHPOINTS);
+        return;
+    }
+    
+    // Check if watchpoint already exists
+    for (int i = 0; i < viewer->watchpoint_count; i++) {
+        if (strcmp(viewer->watchpoints[i].variable, variable) == 0) {
+            printf("\033[1;33m✗ Watchpoint already set on '%s'\033[0m\n", variable);
+            return;
+        }
+    }
+    
+    Watchpoint *wp = &viewer->watchpoints[viewer->watchpoint_count];
+    strncpy(wp->variable, variable, sizeof(wp->variable) - 1);
+    wp->variable[sizeof(wp->variable) - 1] = '\0';
+    wp->type = type;
+    viewer->watchpoint_count++;
+    
+    const char *type_str = (type == WATCHPOINT_READ) ? "read" : 
+                          (type == WATCHPOINT_WRITE) ? "write" : "read/write";
+    printf("\033[1;32m✓ Watchpoint set on '%s' (type: %s)\033[0m\n", variable, type_str);
+}
+
+// List all watchpoints
+void list_watchpoints(TraceViewer *viewer) {
+    if (viewer->watchpoint_count == 0) {
+        printf("\033[1;33mNo watchpoints set\033[0m\n");
+        return;
+    }
+    
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mWatchpoints:\033[0m\n");
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+    
+    for (int i = 0; i < viewer->watchpoint_count; i++) {
+        const char *type_str = (viewer->watchpoints[i].type == WATCHPOINT_READ) ? "read" :
+                              (viewer->watchpoints[i].type == WATCHPOINT_WRITE) ? "write" : "read/write";
+        printf("  %d. \033[1;32m%s\033[0m (%s)\n", i + 1, viewer->watchpoints[i].variable, type_str);
+    }
+    
+    printf("\nTotal: \033[1;32m%d\033[0m watchpoint(s)\n\n", viewer->watchpoint_count);
+}
+
+// Clear a specific watchpoint or all watchpoints
+void clear_watchpoint(TraceViewer *viewer, int index) {
+    if (index < 0) {
+        // Clear all
+        viewer->watchpoint_count = 0;
+        printf("\033[1;32m✓ All watchpoints cleared\033[0m\n");
+    } else if (index >= 0 && index < viewer->watchpoint_count) {
+        // Clear specific watchpoint
+        printf("\033[1;32m✓ Cleared watchpoint on '%s'\033[0m\n", viewer->watchpoints[index].variable);
+        
+        // Shift remaining watchpoints
+        for (int i = index; i < viewer->watchpoint_count - 1; i++) {
+            viewer->watchpoints[i] = viewer->watchpoints[i + 1];
+        }
+        viewer->watchpoint_count--;
+    } else {
+        printf("\033[1;31m✗ Invalid watchpoint number\033[0m\n");
+    }
+}
+
+// Check if watchpoint is triggered at current entry
+int check_watchpoint_triggered(TraceViewer *viewer, int entry_index, char *triggered_var, 
+                               char *trigger_type, WatchpointType *wp_type) {
+    if (viewer->watchpoint_count == 0) {
+        return 0;
+    }
+    
+    TraceEntry *entry = &viewer->entries[entry_index];
+    
+    // Parse current variables
+    VarState curr_vars[MAX_VARS];
+    int curr_count = 0;
+    parse_variables(entry->variables, curr_vars, &curr_count, MAX_VARS);
+    
+    // Check each watchpoint
+    for (int i = 0; i < viewer->watchpoint_count; i++) {
+        Watchpoint *wp = &viewer->watchpoints[i];
+        int read_triggered = 0;
+        int write_triggered = 0;
+        
+        // Check for write
+        if (wp->type == WATCHPOINT_WRITE || wp->type == WATCHPOINT_BOTH) {
+            if (variable_written(wp->variable, viewer->prev_vars, viewer->prev_var_count, 
+                               curr_vars, curr_count)) {
+                write_triggered = 1;
+            }
+        }
+        
+        // Check for read
+        if (wp->type == WATCHPOINT_READ || wp->type == WATCHPOINT_BOTH) {
+            if (variable_read(wp->variable, entry->code, curr_vars, curr_count)) {
+                read_triggered = 1;
+            }
+        }
+        
+        if (read_triggered || write_triggered) {
+            strncpy(triggered_var, wp->variable, 255);
+            triggered_var[255] = '\0';
+            
+            if (read_triggered && write_triggered) {
+                strcpy(trigger_type, "read/write");
+            } else if (read_triggered) {
+                strcpy(trigger_type, "read");
+            } else {
+                strcpy(trigger_type, "write");
+            }
+            
+            *wp_type = wp->type;
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Update variable state tracking
+void update_variable_state(TraceViewer *viewer, int entry_index) {
+    TraceEntry *entry = &viewer->entries[entry_index];
+    parse_variables(entry->variables, viewer->prev_vars, &viewer->prev_var_count, MAX_VARS);
 }
 
 // Read trace file into memory
@@ -254,6 +608,8 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
 
     viewer->entry_count = 0;
     viewer->breakpoint_count = 0;  // Initialize breakpoint count
+    viewer->watchpoint_count = 0;  // Initialize watchpoint count
+    viewer->prev_var_count = 0;    // Initialize variable state count
     char buffer[MAX_LINE_LENGTH];
     int first_line = 1;
 
@@ -385,6 +741,44 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
     }
 }
 
+// Helper: try to open a file, discovering directory from trace if needed
+static FILE* try_open_with_trace_dir(const char *basename, TraceViewer *viewer, char *resolved_path, size_t path_size) {
+    FILE *f;
+    
+    // Strategy 1: Try basename in current directory
+    f = fopen(basename, "r");
+    if (f) {
+        strncpy(resolved_path, basename, path_size - 1);
+        return f;
+    }
+    
+    // Strategy 2: Extract directory from trace entries and try there
+    for (int i = 0; i < viewer->entry_count; i++) {
+        const char *trace_file = viewer->entries[i].filename;
+        
+        // If this entry has a directory path, extract it
+        const char *last_slash = strrchr(trace_file, '/');
+        if (last_slash && last_slash > trace_file) {
+            // Extract directory
+            size_t dir_len = last_slash - trace_file;
+            char dir_path[1024];
+            strncpy(dir_path, trace_file, dir_len);
+            dir_path[dir_len] = '\0';
+            
+            // Try: directory/basename
+            char try_path[1024];
+            snprintf(try_path, sizeof(try_path), "%s/%s", dir_path, basename);
+            f = fopen(try_path, "r");
+            if (f) {
+                strncpy(resolved_path, try_path, path_size - 1);
+                return f;
+            }
+        }
+    }
+    
+    return NULL;
+}
+
 // View full source file with current line highlighted
 void show_file(TraceViewer *viewer, const char *requested_file) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
@@ -393,30 +787,102 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     }
     
     TraceEntry *current = &viewer->entries[viewer->current_entry];
-    const char *filename;
-    int highlight_line = -1;  // -1 means no highlight
+    const char *filename = NULL;
+    int highlight_line = -1;
+    char resolved_path[1024] = {0};
     
-    // If a specific file was requested, use it
+    // If a specific file was requested
     if (requested_file && strlen(requested_file) > 0) {
-        filename = requested_file;
-        // Only highlight if this is the current file
+        const char *basename_to_use = get_basename(requested_file);
+        
+        // Search trace for matching file
+        const char *found_in_trace = NULL;
+        for (int i = 0; i < viewer->entry_count; i++) {
+            if (filenames_match(requested_file, viewer->entries[i].filename)) {
+                found_in_trace = viewer->entries[i].filename;
+                break;
+            }
+        }
+        
+        if (found_in_trace) {
+            // Try trace path directly
+            FILE *test = fopen(found_in_trace, "r");
+            if (test) {
+                fclose(test);
+                filename = found_in_trace;
+            } else {
+                // Try with directory discovery
+                test = try_open_with_trace_dir(get_basename(found_in_trace), viewer, resolved_path, sizeof(resolved_path));
+                if (test) {
+                    fclose(test);
+                    filename = resolved_path;
+                } else {
+                    filename = basename_to_use;
+                }
+            }
+        } else {
+            // Not in trace, try with directory discovery
+            FILE *test = try_open_with_trace_dir(basename_to_use, viewer, resolved_path, sizeof(resolved_path));
+            if (test) {
+                fclose(test);
+                filename = resolved_path;
+            } else {
+                filename = basename_to_use;
+            }
+        }
+        
+        // Check if we should highlight
         if (filenames_match(requested_file, current->filename)) {
             highlight_line = current->line_number;
         }
     } else {
         // Default to current file
-        filename = current->filename;
+        const char *current_path = current->filename;
+        
+        // Try current path directly
+        FILE *test = fopen(current_path, "r");
+        if (test) {
+            fclose(test);
+            filename = current_path;
+        } else {
+            // Try with directory discovery
+            test = try_open_with_trace_dir(get_basename(current_path), viewer, resolved_path, sizeof(resolved_path));
+            if (test) {
+                fclose(test);
+                filename = resolved_path;
+            } else {
+                filename = get_basename(current_path);
+            }
+        }
+        
         highlight_line = current->line_number;
     }
     
     FILE *file = fopen(filename, "r");
     if (!file) {
-        printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", filename);
+        printf("\033[1;31m✗ Cannot open file: %s\033[0m\n", get_basename(filename));
+        if (requested_file && strlen(requested_file) > 0) {
+            printf("\033[1;33mTip: File not found in trace or on disk.\033[0m\n");
+            printf("\033[1;33mFiles in trace:\033[0m\n");
+            for (int i = 0; i < viewer->entry_count; i++) {
+                int already_shown = 0;
+                for (int j = 0; j < i; j++) {
+                    if (strcmp(get_basename(viewer->entries[i].filename), 
+                               get_basename(viewer->entries[j].filename)) == 0) {
+                        already_shown = 1;
+                        break;
+                    }
+                }
+                if (!already_shown) {
+                    printf("  - %s\n", get_basename(viewer->entries[i].filename));
+                }
+            }
+        }
         return;
     }
     
     printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
-    printf("\033[1;33mFile: %s\033[0m\n", filename);
+    printf("\033[1;33mFile: %s\033[0m\n", get_basename(filename));
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
     
     char line[MAX_LINE_LENGTH];
@@ -482,12 +948,18 @@ void print_help() {
     printf("\n\033[1;35mNavigation:\033[0m\n");
     printf("  \033[1;32mn\033[0m              - Next execution step\n");
     printf("  \033[1;32mback\033[0m           - Previous execution step\n");
-    printf("  \033[1;32m:<number>\033[0m      - Jump to execution number (e.g., :100)\n");
+    printf("  \033[1;32m:<number>\033[0m      - Jump to execution (e.g., :5 jumps to [5/50])\n");
     printf("\n\033[1;35mBreakpoints:\033[0m\n");
     printf("  \033[1;32mb <file> <line>\033[0m - Set breakpoint (e.g., b test.py 25)\n");
     printf("  \033[1;32mlist\033[0m           - List all breakpoints\n");
-    printf("  \033[1;32mc\033[0m              - Continue to next breakpoint\n");
-    printf("  \033[1;32mrc\033[0m             - Reverse continue to previous breakpoint\n");
+    printf("  \033[1;32mc\033[0m              - Continue to next breakpoint/watchpoint\n");
+    printf("  \033[1;32mrc\033[0m             - Reverse continue to previous breakpoint/watchpoint\n");
+    printf("\n\033[1;35mWatchpoints:\033[0m\n");
+    printf("  \033[1;32mw <var>\033[0m        - Set watchpoint on variable (read/write)\n");
+    printf("  \033[1;32mrw <var>\033[0m       - Set read watchpoint on variable\n");
+    printf("  \033[1;32mww <var>\033[0m       - Set write watchpoint on variable\n");
+    printf("  \033[1;32mlistw\033[0m          - List all watchpoints\n");
+    printf("  \033[1;32mclearw [num]\033[0m   - Clear watchpoint(s) (no arg = clear all)\n");
     printf("\n\033[1;35mAnalysis:\033[0m\n");
     printf("  \033[1;32mshow [file]\033[0m    - Show full source file (current or specified)\n");
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
@@ -615,35 +1087,75 @@ int main(int argc, char *argv[]) {
     }
 
     printf("✓ Loaded %d execution steps\n", viewer.entry_count);
+    
+    // Set global pointer for autocomplete access
+    g_viewer = &viewer;
+    
+    // Initialize readline for command history and tab completion
+    init_readline();
+    
     print_help();
+    
+    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete commands and .py files)\n");
     
     // Print first entry
     print_current_entry(&viewer);
 
-    char input[MAX_LINE_LENGTH];
+    char *last_command = NULL;
     while (1) {
-        // Show execution number (from exec_order) and position
-        long exec_num = viewer.entries[viewer.current_entry].exec_order;
-        printf("\n\033[1;32m[Exec #%ld - %d/%d]\033[0m > ", 
-               exec_num, viewer.current_entry + 1, viewer.entry_count);
-        if (!fgets(input, sizeof(input), stdin)) {
+        char input[MAX_LINE_LENGTH];
+        char *cmd;
+        
+        // Build prompt with user-friendly 1-based position
+        char prompt[64];
+        snprintf(prompt, sizeof(prompt), "\n\033[1;32m[%d/%d]\033[0m > ", 
+                 viewer.current_entry + 1, viewer.entry_count);
+        
+        // Use readline for better line editing and history
+        char *line = readline(prompt);
+        
+        // Check for EOF (Ctrl+D)
+        if (!line) {
+            printf("\n");
             break;
         }
-
-        // Remove trailing newline
-        size_t len = strlen(input);
-        if (len > 0 && input[len - 1] == '\n') {
-            input[len - 1] = '\0';
-        }
-
+        
         // Trim whitespace
-        char *cmd = input;
+        cmd = line;
         while (isspace((unsigned char)*cmd)) cmd++;
         
-        // Handle empty input
+        // Handle empty input - repeat last command
         if (strlen(cmd) == 0) {
-            continue;
+            free(line);
+            if (last_command) {
+                cmd = last_command;
+                // Note: don't add to history again
+            } else {
+                continue;
+            }
+        } else {
+            // Add non-empty command to history
+            add_history(line);
+            
+            // Update last command
+            if (last_command) {
+                free(last_command);
+            }
+            last_command = strdup(cmd);
         }
+        
+        // Copy command to input buffer for processing
+        strncpy(input, cmd, MAX_LINE_LENGTH - 1);
+        input[MAX_LINE_LENGTH - 1] = '\0';
+        
+        // Free the readline buffer (but not last_command if we're using it)
+        if (cmd == line) {
+            free(line);
+        }
+        
+        // Point cmd to input buffer for command processing
+        cmd = input;
+        while (isspace((unsigned char)*cmd)) cmd++;
 
         // Handle 'n' command (next)
         if (strcmp(cmd, "n") == 0) {
@@ -692,21 +1204,28 @@ int main(int argc, char *argv[]) {
         }
         // Handle ':<number>' command (jump to execution)
         else if (cmd[0] == ':') {
-            long exec_num = atol(cmd + 1);
+            long user_num = atol(cmd + 1);
+            // Convert from 1-based user input to 0-based internal execution order
+            long exec_num = user_num - 1;
             int found = 0;
             
-            for (int i = 0; i < viewer.entry_count; i++) {
-                if (viewer.entries[i].exec_order == exec_num) {
-                    viewer.current_entry = i;
-                    print_current_entry(&viewer);
-                    found = 1;
-                    break;
+            // Validate range (user sees 1 to N, we search for 0 to N-1)
+            if (user_num < 1 || user_num > viewer.entry_count) {
+                printf("\033[1;31m✗ Execution #%ld out of range. Valid range: 1-%d\033[0m\n", 
+                       user_num, viewer.entry_count);
+            } else {
+                for (int i = 0; i < viewer.entry_count; i++) {
+                    if (viewer.entries[i].exec_order == exec_num) {
+                        viewer.current_entry = i;
+                        print_current_entry(&viewer);
+                        found = 1;
+                        break;
+                    }
                 }
-            }
-            
-            if (!found) {
-                printf("\033[1;31m✗ Execution #%ld not found. Valid range: 0-%ld\033[0m\n", 
-                       exec_num, viewer.entries[viewer.entry_count - 1].exec_order);
+                
+                if (!found) {
+                    printf("\033[1;31m✗ Execution #%ld not found in trace\033[0m\n", user_num);
+                }
             }
         }
         // Handle 'find <var>' command
@@ -791,6 +1310,62 @@ int main(int argc, char *argv[]) {
                 printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
             }
         }
+        // Handle 'w <var>' command (set watchpoint - both read and write)
+        else if (cmd[0] == 'w' && (cmd[1] == ' ' || cmd[1] == '\0')) {
+            if (cmd[1] == '\0') {
+                printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
+                printf("Example: w counter\n");
+            } else {
+                char *var_name = cmd + 2;
+                while (isspace((unsigned char)*var_name)) var_name++;
+                if (strlen(var_name) > 0) {
+                    add_watchpoint(&viewer, var_name, WATCHPOINT_BOTH);
+                } else {
+                    printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
+                }
+            }
+        }
+        // Handle 'rw <var>' command (set read watchpoint)
+        else if (strncmp(cmd, "rw ", 3) == 0) {
+            char *var_name = cmd + 3;
+            while (isspace((unsigned char)*var_name)) var_name++;
+            if (strlen(var_name) > 0) {
+                add_watchpoint(&viewer, var_name, WATCHPOINT_READ);
+            } else {
+                printf("\033[1;31m✗ Usage: rw <variable>\033[0m\n");
+                printf("Example: rw counter\n");
+            }
+        }
+        // Handle 'ww <var>' command (set write watchpoint)
+        else if (strncmp(cmd, "ww ", 3) == 0) {
+            char *var_name = cmd + 3;
+            while (isspace((unsigned char)*var_name)) var_name++;
+            if (strlen(var_name) > 0) {
+                add_watchpoint(&viewer, var_name, WATCHPOINT_WRITE);
+            } else {
+                printf("\033[1;31m✗ Usage: ww <variable>\033[0m\n");
+                printf("Example: ww counter\n");
+            }
+        }
+        // Handle 'listw' command (list watchpoints)
+        else if (strcmp(cmd, "listw") == 0) {
+            list_watchpoints(&viewer);
+        }
+        // Handle 'clearw [num]' command (clear watchpoint(s))
+        else if (strncmp(cmd, "clearw", 6) == 0) {
+            if (cmd[6] == '\0') {
+                // Clear all watchpoints
+                clear_watchpoint(&viewer, -1);
+            } else if (cmd[6] == ' ') {
+                // Clear specific watchpoint
+                int wp_num = atoi(cmd + 7);
+                if (wp_num > 0 && wp_num <= viewer.watchpoint_count) {
+                    clear_watchpoint(&viewer, wp_num - 1);
+                } else {
+                    printf("\033[1;31m✗ Invalid watchpoint number. Use 'listw' to see watchpoints.\033[0m\n");
+                }
+            }
+        }
         // Handle 'q' or 'quit' command
         else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
             unlink("trace_eval_temp.py");
@@ -813,6 +1388,14 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Save command history
+    save_readline_history();
+    
+    // Free last command
+    if (last_command) {
+        free(last_command);
+    }
+    
     cleanup(&viewer);
     printf("\n\033[1;36mGoodbye! Happy debugging! 🐛\033[0m\n\n");
     return 0;
