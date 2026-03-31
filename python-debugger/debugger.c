@@ -211,7 +211,7 @@ write_variables(FILE *fp, PyObject *locals)
     }
     return first;
 }
-
+// hopefully this works
 static void
 write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
 {

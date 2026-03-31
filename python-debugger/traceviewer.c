@@ -520,7 +520,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
         long pos_before = ftell(f);
         fprintf(f, "%s\n", expression);
         fclose(f);
-
+  // hopefully this works
         char command[512];
         snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
         FILE *output = popen(command, "r");
