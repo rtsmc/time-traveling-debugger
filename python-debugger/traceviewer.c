@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <dirent.h>
 
 // Readline support (mandatory)
@@ -11,7 +13,7 @@
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
-#define MAX_FIELD_LENGTH 2048
+#define MAX_FIELD_LENGTH 25000
 #define MAX_BREAKPOINTS 100
 #define MAX_WATCHPOINTS 50
 #define MAX_VARS 100
@@ -963,195 +965,101 @@ void print_help() {
     printf("  \033[1;32msummary\033[0m        - Show trace summary\n");
     printf("  \033[1;32mfind <var>\033[0m    - Search for variable usage\n");
     printf("  \033[1;32mjump <line>\033[0m   - Jump to first occurrence of source line\n");
+    printf("  \033[1;32meval <expression>\033[0m   - Evaluates a python command and prints the result\n");
     printf("\n\033[1;35mOther:\033[0m\n");
     printf("  \033[1;32mhelp\033[0m           - Show this help\n");
     printf("  \033[1;32mquit\033[0m or \033[1;32mq\033[0m     - Exit debugger\n");
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
-// Filename completion support - shows .py files from trace and current directory
-static char* filename_generator(const char* text, int state) {
-    static DIR *dir = NULL;
-    static int len;
-    static int trace_index = 0;
-    static int seen_count = 0;
-    static char seen_files[100][256];  // Track files we've already shown
-    struct dirent *entry;
-    
-    if (!state) {
-        // First call - reset state
-        if (dir) {
-            closedir(dir);
-            dir = NULL;
+void eval_expression(TraceViewer *viewer, const char *expression) {
+    if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
+        printf("\033[1;31m✗ No current entry\033[0m\n");
+        return;
+    }
+
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+
+    const char *temp_file = "trace_eval_temp.py";
+
+    // is an import, just add it to the file and return
+    if(strncmp(expression, "import ", 7) == 0 || strncmp(expression, "from ", 5) == 0){
+        FILE *f = fopen(temp_file, "a");
+        if (!f) {
+            printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
+            return;
         }
-        trace_index = 0;
-        seen_count = 0;
-        len = strlen(text);
-    }
-    
-    // Phase 1: Suggest files from trace (most relevant)
-    if (g_viewer && trace_index < g_viewer->entry_count) {
-        while (trace_index < g_viewer->entry_count) {
-            const char *trace_file = g_viewer->entries[trace_index].filename;
-            trace_index++;
-            
-            // Get basename
-            const char *basename = get_basename(trace_file);
-            size_t name_len = strlen(basename);
-            
-            // Check if it's a .py file
-            if (name_len > 3 && strcmp(basename + name_len - 3, ".py") == 0) {
-                // Check if it matches the text
-                if (strncmp(basename, text, len) == 0) {
-                    // Check if we've already shown this file
-                    int already_seen = 0;
-                    for (int i = 0; i < seen_count; i++) {
-                        if (strcmp(seen_files[i], basename) == 0) {
-                            already_seen = 1;
-                            break;
-                        }
-                    }
-                    
-                    if (!already_seen) {
-                        // Add to seen list
-                        if (seen_count < 100) {
-                            strncpy(seen_files[seen_count], basename, 255);
-                            seen_files[seen_count][255] = '\0';
-                            seen_count++;
-                        }
-                        return strdup(basename);
-                    }
-                }
-            }
+        long pos_before = ftell(f);
+        fprintf(f, "%s\n", expression);
+        fclose(f);
+  // hopefully this works
+        char command[512];
+        snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
+        FILE *output = popen(command, "r");
+        int failed = 0;
+
+        if (output) {
+            int status = pclose(output);
+            if (WEXITSTATUS(status) != 0) failed = 1;
         }
-    }
-    
-    // Phase 2: Suggest files from current directory
-    if (!dir) {
-        dir = opendir(".");
-    }
-    
-    if (dir) {
-        while ((entry = readdir(dir)) != NULL) {
-            const char *name = entry->d_name;
-            size_t name_len = strlen(name);
-            
-            // Only .py files
-            if (name_len > 3 && strcmp(name + name_len - 3, ".py") == 0) {
-                // Check if it matches the text
-                if (strncmp(name, text, len) == 0) {
-                    // Check if we've already shown this file
-                    int already_seen = 0;
-                    for (int i = 0; i < seen_count; i++) {
-                        if (strcmp(seen_files[i], name) == 0) {
-                            already_seen = 1;
-                            break;
-                        }
-                    }
-                    
-                    if (!already_seen) {
-                        // Add to seen list
-                        if (seen_count < 100) {
-                            strncpy(seen_files[seen_count], name, 255);
-                            seen_files[seen_count][255] = '\0';
-                            seen_count++;
-                        }
-                        return strdup(name);
-                    }
-                }
-            }
+
+        if (failed) {
+            int fd = open(temp_file, O_WRONLY);
+            ftruncate(fd, pos_before);
+            close(fd);
+            printf("\033[1;31m✗ Import failed\033[0m\n");
+        } else {
+            printf("\033[1;32m✓ Import added to session\033[0m\n\n");
         }
-        
-        // Done with directory
-        closedir(dir);
-        dir = NULL;
+        return;
     }
-    
-    // No more matches
-    return NULL;
-}
 
-// Tab completion support
-static char* command_generator(const char* text, int state) {
-    static int list_index, len;
-    static const char* commands[] = {
-        "n", "next", "back", "b", "break", "list", "clear", "c", "continue",
-        "rc", "show", "summary", "find", "jump", "help", "quit", "q", NULL
-    };
-    
-    if (!state) {
-        list_index = 0;
-        len = strlen(text);
+    // Eval and print
+    FILE *f = fopen(temp_file, "a");
+    if (!f) {
+        printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
+        return;
     }
-    
-    while (commands[list_index]) {
-        const char* name = commands[list_index];
-        list_index++;
-        
-        if (strncmp(name, text, len) == 0) {
-            return strdup(name);
+
+    long pos_before = ftell(f);
+
+    if (strlen(entry->variables) > 0) {
+        fprintf(f, "%s\n", entry->variables);
+    }
+
+    fprintf(f, "__r=%s\n", expression);
+    fprintf(f, "print(f'Result: {__r}')\n");
+    fprintf(f, "print(f'Type: {type(__r).__name__}')\n");
+    fclose(f);
+
+    char command[512];
+    snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
+
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+
+    FILE *output = popen(command, "r");
+    if (output) {
+        char line[MAX_LINE_LENGTH];
+        while (fgets(line, sizeof(line), output)) {
+            printf("%s", line);
         }
-    }
-    
-    return NULL;
-}
 
-static char** command_completion(const char* text, int start, int end) {
-    // Don't use default filename completion
-    rl_attempted_completion_over = 1;
-    
-    // Complete commands at the start of the line
-    if (start == 0) {
-        return rl_completion_matches(text, command_generator);
+        int status = pclose(output);
+        if (WEXITSTATUS(status) != 0) {
+            printf("\033[1;31m✗ Evaluation failed\033[0m\n");
+        }
+    } else {
+        printf("\033[1;31m✗ Failed to execute Python\033[0m\n");
     }
-    
-    // For arguments, check what command was typed
-    // Get the line buffer to check the command
-    const char *line = rl_line_buffer;
-    
-    // Check if this is 'show' or 'b'/'break' command - complete .py filenames
-    if ((strncmp(line, "show ", 5) == 0 && start >= 5) ||
-        (strncmp(line, "b ", 2) == 0 && start >= 2) ||
-        (strncmp(line, "break ", 6) == 0 && start >= 6)) {
-        return rl_completion_matches(text, filename_generator);
-    }
-    
-    // No completion for other arguments
-    return NULL;
-}
 
-// Initialize readline
-void init_readline() {
-    // Set up tab completion
-    rl_attempted_completion_function = command_completion;
-    
-    // Set completer delimiters to space, tab, and newline only
-    // This prevents readline from breaking on special characters
-    rl_completer_word_break_characters = " \t\n";
-    
-    // Configure readline behavior
-    rl_bind_key('\t', rl_complete);  // Ensure TAB triggers completion
-    
-    // Load history from file
-    char* home = getenv("HOME");
-    if (home) {
-        char history_file[512];
-        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
-        read_history(history_file);
-        stifle_history(1000);  // Limit to 1000 entries
-    }
-}
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 
-// Save history on exit
-void save_readline_history() {
-    char* home = getenv("HOME");
-    if (home) {
-        char history_file[512];
-        snprintf(history_file, sizeof(history_file), "%s/.traceviewer_history", home);
-        write_history(history_file);
-    }
+    int fd = open(temp_file, O_WRONLY);
+    ftruncate(fd, pos_before);
+    close(fd);
 }
-
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -1161,13 +1069,13 @@ int main(int argc, char *argv[]) {
     }
 
     TraceViewer viewer;
-    
+
     printf("\033[1;36m╔════════════════════════════════════════════════════════╗\033[0m\n");
     printf("\033[1;36m║         Python Time-Traveling Debugger v1.0          ║\033[0m\n");
     printf("\033[1;36m╚════════════════════════════════════════════════════════╝\033[0m\n\n");
-    
+
     printf("Loading trace file: %s\n", argv[1]);
-    
+
     if (!read_trace_file(argv[1], &viewer)) {
         return 1;
     }
@@ -1460,7 +1368,20 @@ int main(int argc, char *argv[]) {
         }
         // Handle 'q' or 'quit' command
         else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
+            unlink("trace_eval_temp.py");
             break;
+        }
+        // Eval
+        else if (strncmp(cmd, "eval ", 5) == 0) {
+            char *expression = cmd + 5;
+            while (isspace((unsigned char)*expression)) expression++;
+            if (strlen(expression) > 0) {
+                eval_expression(&viewer, expression);
+            } else {
+                printf("\033[1;31m✗ Usage: eval <expression>\033[0m\n");
+                printf("Example: eval x + y\n");
+                printf("Example: eval len(my_list)\n");
+            }
         }
         else {
             printf("\033[1;31m✗ Unknown command. Type 'help' for available commands\033[0m\n");

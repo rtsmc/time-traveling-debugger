@@ -10,11 +10,13 @@
 #define COMPAT_PyFrame_GetCode(frame) ((frame)->f_code)
 #define COMPAT_PyFrame_GetLocals(frame) ((frame)->f_locals)
 #define COMPAT_Py_XDECREF_Code(code) ((void)0)  // No-op for old API
+#define COMPAT_PyFrame_GetGlobals(frame) ((frame)->f_globals)
 #else
 // Python 3.11+: Use accessor functions
 #define COMPAT_PyFrame_GetCode(frame) PyFrame_GetCode(frame)
 #define COMPAT_PyFrame_GetLocals(frame) PyFrame_GetLocals(frame)
 #define COMPAT_Py_XDECREF_Code(code) Py_XDECREF(code)
+#define COMPAT_PyFrame_GetGlobals(frame) PyFrame_GetGlobals(frame)
 #endif
 
 // Breakpoint structure
@@ -44,6 +46,7 @@ typedef struct TraceEntry {
     int lineno;
     char *code;
     char *variables;
+    char *globals;
     long exec_num;
 } TraceEntry;
 
@@ -165,28 +168,32 @@ static Breakpoint* check_breakpoint(const char *filename, int lineno) {
 }
 
 // Helper function to write variable values to file
-static void
+static int
 write_variables(FILE *fp, PyObject *locals)
 {
+    int first = 1;
     if (locals == NULL || !PyDict_Check(locals)) {
-        return;
+        return first;
     }
 
     PyObject *key, *value;
     Py_ssize_t pos = 0;
-    int first = 1;
 
     while (PyDict_Next(locals, &pos, &key, &value)) {
-        if (!first) {
-            fprintf(fp, ";");
-        }
-        first = 0;
-
         const char *var_name = PyUnicode_AsUTF8(key);
         if (var_name == NULL) {
             PyErr_Clear();
             continue;
         }
+
+        if (strcmp(var_name, "__builtins__") == 0) {
+            continue;
+        }
+
+        if (!first) {
+            fprintf(fp, ";");
+        }
+        first = 0;
 
         PyObject *repr = PyObject_Repr(value);
         const char *var_value = "";
@@ -200,6 +207,66 @@ write_variables(FILE *fp, PyObject *locals)
 
         fprintf(fp, "%s=%s", var_name, var_value);
 
+        Py_XDECREF(repr);
+    }
+    return first;
+}
+// hopefully this works
+static void
+write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
+{
+    if (globals == NULL || !PyDict_Check(globals)) {
+        return;
+    }
+
+    PyObject *key, *value;
+    Py_ssize_t pos = 0;
+
+    while (PyDict_Next(globals, &pos, &key, &value)) {
+        const char *var_name = PyUnicode_AsUTF8(key);
+        if (var_name == NULL) {
+            PyErr_Clear();
+            continue;
+        }
+
+        // Skip builtins and internals
+        if (strcmp(var_name, "__builtins__") == 0 ||
+            strcmp(var_name, "__name__") == 0 ||
+            strcmp(var_name, "__doc__") == 0 ||
+            strcmp(var_name, "__package__") == 0 ||
+            strcmp(var_name, "__loader__") == 0 ||
+            strcmp(var_name, "__spec__") == 0 ||
+            strcmp(var_name, "__file__") == 0 ||
+            strcmp(var_name, "__cached__") == 0 ||
+            var_name[0] == '_') {
+            continue;
+        }
+
+        if (locals != NULL && PyDict_Contains(locals, key)) {
+            continue;
+        }
+
+        // Skip functions, classes, modules
+        if (PyFunction_Check(value) || PyType_Check(value) || PyModule_Check(value)) {
+            continue;
+        }
+
+        if (!first){
+            fprintf(fp, ";");
+        }
+        first = 0;
+
+        PyObject *repr = PyObject_Repr(value);
+        const char *var_value = "";
+        if (repr != NULL) {
+            var_value = PyUnicode_AsUTF8(repr);
+            if (var_value == NULL) {
+                PyErr_Clear();
+                var_value = "<e>";
+            }
+        }
+
+        fprintf(fp, "%s=%s", var_name, var_value);
         Py_XDECREF(repr);
     }
 }
@@ -392,7 +459,7 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
                     int start = trace_history_count > 10 ? trace_history_count - 10 : 0;
                     for (int i = start; i < trace_history_count; i++) {
                         char marker = (i == trace_history_index - 1) ? '>' : ' ';
-                        printf("  %c [%d] #%ld %s:%d\n", 
+                        printf("  %c [%d] #%ld %s:%d\n",
                                marker, i + 1, trace_history[i].exec_num,
                                trace_history[i].filename, trace_history[i].lineno);
                     }
@@ -414,14 +481,11 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
 
     // Get locals - force materialization
     PyObject *locals = NULL;
+    PyObject *globals = NULL;
 
-// LEFT SOME CODE COMMENTED OUT USE IF WEIRD THINGS START HAPPENING WITH TRACE VIEWER
-// NOT SEEING VARIABLES  IN DIFFERENT PYTHON VERSIONS (before vs after 3.11)
-
-//    #if PY_VERSION_HEX >= 0x030B0000
-
-//        PyCodeObject *code_obj = COMPAT_PyFrame_GetCode(frame);
     locals = PyEval_GetLocals();
+    globals = PyEval_GetGlobals();
+
     if (locals == NULL) {
         PyErr_Clear();
         locals = PyDict_New();
@@ -435,25 +499,19 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
 //            frame->f_locals = PyDict_New();
 //        }
 
-        // Force fast locals to be copied into f_locals dict
-//        PyFrame_FastToLocals(frame);
-
-//        locals = frame->f_locals;
-//        if (locals == NULL) {
-//            PyErr_Clear();
-//            locals = PyDict_New();
-//        } else {
-//            Py_ssize_t size = PyDict_Size(locals);
-//            printf("DEBUG: Got %ld local variables\n", size);
-//            Py_INCREF(locals);
-//        }
-//    #endif
+    if (globals == NULL) {
+        PyErr_Clear();
+        globals = PyDict_New();
+    } else {
+        Py_INCREF(globals);
+    }
 
     // Write to trace file with properly initialized locals
     fprintf(trace_file, "%ld|||%s|||%d|||%s|||",
         execution_counter++, filename, lineno, source_line);
 
-    write_variables(trace_file, locals);
+    int has_locals = write_variables(trace_file, locals);
+    write_globals(trace_file, globals, locals, has_locals);
     fprintf(trace_file, "\n");
     fflush(trace_file);
 
@@ -488,10 +546,33 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         }
     }
 
+//    if (globals && PyDict_Check(globals)) {
+//        PyObject *key, *value;
+//        Py_ssize_t pos = 0;
+
+//        while (PyDict_Next(globals, &pos, &key, &value) && strlen(var_buffer) < 3900) {
+//            const char *var_name = PyUnicode_AsUTF8(key);
+//            if(var_name) {
+//                strcat(var_buffer, var_name);
+//                strcat(var_buffer, "=");
+//
+//                PyObject *repr = PyObject_Repr(value);
+//               if(repr) {
+//                    const char *var_value = PyUnicode_AsUTF8(repr);
+//                    if (var_value) {
+//                        strncat(var_buffer, var_value, 100);
+//                    }
+//                    Py_XDECREF(repr);
+//                }
+//           }
+//        }
+//    }
+
     add_trace_entry(filename, lineno, source_line, var_buffer);
 
     free(source_line);
     Py_XDECREF(locals);
+    Py_XDECREF(globals);
 
     return 0;
 }
