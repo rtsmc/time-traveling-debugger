@@ -13,7 +13,7 @@
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
-#define MAX_FIELD_LENGTH 25000
+#define MAX_FIELD_LENGTH 512
 #define MAX_BREAKPOINTS 100
 #define MAX_WATCHPOINTS 50
 #define MAX_VARS 100
@@ -47,7 +47,7 @@ typedef struct {
 
 // Variable state for tracking changes
 typedef struct {
-    char name[256];
+    char name[513];
     char value[512];
 } VarState;
 
@@ -766,7 +766,7 @@ static FILE* try_open_with_trace_dir(const char *basename, TraceViewer *viewer, 
             dir_path[dir_len] = '\0';
             
             // Try: directory/basename
-            char try_path[1024];
+            char try_path[1025];
             snprintf(try_path, sizeof(try_path), "%s/%s", dir_path, basename);
             f = fopen(try_path, "r");
             if (f) {
@@ -789,7 +789,7 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
     TraceEntry *current = &viewer->entries[viewer->current_entry];
     const char *filename = NULL;
     int highlight_line = -1;
-    char resolved_path[1024] = {0};
+    char resolved_path[1026] = {0};
     
     // If a specific file was requested
     if (requested_file && strlen(requested_file) > 0) {
