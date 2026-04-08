@@ -57,3 +57,4 @@ dkms.conf
 **/build/
 **/*egg-info*/
 **/*__pycache__*/
+**/.clangd
