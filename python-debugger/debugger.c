@@ -196,12 +196,15 @@ write_variables(FILE *fp, PyObject *locals)
         first = 0;
 
         PyObject *repr = PyObject_Repr(value);
-        const char *var_value = "";
-        if (repr != NULL) {
-            var_value = PyUnicode_AsUTF8(repr);
-            if (var_value == NULL) {
+        const char *var_value = "<unrepr>";
+        if (repr == NULL) {
+            PyErr_Clear();
+        } else {
+            const char *utf8 = PyUnicode_AsUTF8(repr);
+            if (utf8 == NULL) {
                 PyErr_Clear();
-                var_value = "<e>";
+            } else {
+                var_value = utf8;
             }
         }
 
@@ -257,12 +260,15 @@ write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
         first = 0;
 
         PyObject *repr = PyObject_Repr(value);
-        const char *var_value = "";
-        if (repr != NULL) {
-            var_value = PyUnicode_AsUTF8(repr);
-            if (var_value == NULL) {
+        const char *var_value = "<unrepr>";
+        if (repr == NULL) {
+            PyErr_Clear();
+        } else {
+            const char *utf8 = PyUnicode_AsUTF8(repr);
+            if (utf8 == NULL) {
                 PyErr_Clear();
-                var_value = "<e>";
+            } else {
+                var_value = utf8;
             }
         }
 
@@ -535,9 +541,15 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
                 strcat(var_buffer, "=");
 
                 PyObject *repr = PyObject_Repr(value);
-                if (repr) {
+                if (repr == NULL) {
+                    PyErr_Clear();
+                    strncat(var_buffer, "<unrepr>", 100);
+                } else {
                     const char *var_value = PyUnicode_AsUTF8(repr);
-                    if (var_value) {
+                    if (var_value == NULL) {
+                        PyErr_Clear();
+                        strncat(var_buffer, "<unrepr>", 100);
+                    } else {
                         strncat(var_buffer, var_value, 100);
                     }
                     Py_XDECREF(repr);
