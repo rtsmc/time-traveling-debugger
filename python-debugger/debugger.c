@@ -39,6 +39,155 @@ static int step_mode = 0;   // 0=continue, 1=step_next, 2=step_into
 static char *trace_filename = NULL;
 static Breakpoint *breakpoints = NULL;
 
+#define MAX_REPR_CHARS 500
+
+static int
+is_runtime_name(const char *var_name)
+{
+    return strcmp(var_name, "__builtins__") == 0 ||
+           strcmp(var_name, "__name__") == 0 ||
+           strcmp(var_name, "__doc__") == 0 ||
+           strcmp(var_name, "__package__") == 0 ||
+           strcmp(var_name, "__loader__") == 0 ||
+           strcmp(var_name, "__spec__") == 0 ||
+           strcmp(var_name, "__file__") == 0 ||
+           strcmp(var_name, "__cached__") == 0 ||
+           strcmp(var_name, "__annotations__") == 0;
+}
+
+static int
+should_skip_variable(const char *var_name, PyObject *value)
+{
+    if (is_runtime_name(var_name)) {
+        return 1;
+    }
+
+    return PyModule_Check(value) || PyFunction_Check(value) || PyType_Check(value);
+}
+
+static void
+write_trace_text(FILE *fp, const char *text, Py_ssize_t max_chars)
+{
+    Py_ssize_t i;
+
+    if (text == NULL) {
+        fputs("<unrepr>", fp);
+        return;
+    }
+
+    for (i = 0; text[i] != '\0' && i < max_chars; i++) {
+        switch (text[i]) {
+        case '\n':
+            fputs("\\n", fp);
+            break;
+        case '\r':
+            fputs("\\r", fp);
+            break;
+        case ';':
+            fputs("\\x3b", fp);
+            break;
+        case '|':
+            fputs("\\x7c", fp);
+            break;
+        default:
+            fputc(text[i], fp);
+            break;
+        }
+    }
+
+    if (text[i] != '\0') {
+        fputs("...<truncated>", fp);
+    }
+}
+
+static void
+write_repr(FILE *fp, PyObject *value)
+{
+    PyObject *repr = PyObject_Repr(value);
+    if (repr == NULL) {
+        PyErr_Clear();
+        fputs("<unrepr>", fp);
+        return;
+    }
+
+    const char *utf8 = PyUnicode_AsUTF8(repr);
+    if (utf8 == NULL) {
+        PyErr_Clear();
+        fputs("<unrepr>", fp);
+    } else {
+        write_trace_text(fp, utf8, MAX_REPR_CHARS);
+    }
+
+    Py_XDECREF(repr);
+}
+
+static void
+append_buffer(char *buffer, size_t buffer_size, const char *text)
+{
+    size_t used = strlen(buffer);
+    if (used >= buffer_size - 1) {
+        return;
+    }
+    strncat(buffer, text, buffer_size - used - 1);
+}
+
+static void
+append_trace_text(char *buffer, size_t buffer_size, const char *text, Py_ssize_t max_chars)
+{
+    Py_ssize_t i;
+
+    if (text == NULL) {
+        append_buffer(buffer, buffer_size, "<unrepr>");
+        return;
+    }
+
+    for (i = 0; text[i] != '\0' && i < max_chars; i++) {
+        char ch[2] = {text[i], '\0'};
+        switch (text[i]) {
+        case '\n':
+            append_buffer(buffer, buffer_size, "\\n");
+            break;
+        case '\r':
+            append_buffer(buffer, buffer_size, "\\r");
+            break;
+        case ';':
+            append_buffer(buffer, buffer_size, "\\x3b");
+            break;
+        case '|':
+            append_buffer(buffer, buffer_size, "\\x7c");
+            break;
+        default:
+            append_buffer(buffer, buffer_size, ch);
+            break;
+        }
+    }
+
+    if (text[i] != '\0') {
+        append_buffer(buffer, buffer_size, "...<truncated>");
+    }
+}
+
+static void
+append_repr(char *buffer, size_t buffer_size, PyObject *value)
+{
+    PyObject *repr = PyObject_Repr(value);
+    if (repr == NULL) {
+        PyErr_Clear();
+        append_buffer(buffer, buffer_size, "<unrepr>");
+        return;
+    }
+
+    const char *utf8 = PyUnicode_AsUTF8(repr);
+    if (utf8 == NULL) {
+        PyErr_Clear();
+        append_buffer(buffer, buffer_size, "<unrepr>");
+    } else {
+        append_trace_text(buffer, buffer_size, utf8, 100);
+    }
+
+    Py_XDECREF(repr);
+}
+
 // Trace history for step back
 #define MAX_TRACE_HISTORY 1000
 typedef struct TraceEntry {
@@ -186,7 +335,7 @@ write_variables(FILE *fp, PyObject *locals)
             continue;
         }
 
-        if (strcmp(var_name, "__builtins__") == 0) {
+        if (should_skip_variable(var_name, value)) {
             continue;
         }
 
@@ -195,22 +344,8 @@ write_variables(FILE *fp, PyObject *locals)
         }
         first = 0;
 
-        PyObject *repr = PyObject_Repr(value);
-        const char *var_value = "<unrepr>";
-        if (repr == NULL) {
-            PyErr_Clear();
-        } else {
-            const char *utf8 = PyUnicode_AsUTF8(repr);
-            if (utf8 == NULL) {
-                PyErr_Clear();
-            } else {
-                var_value = utf8;
-            }
-        }
-
-        fprintf(fp, "%s=%s", var_name, var_value);
-
-        Py_XDECREF(repr);
+        fprintf(fp, "%s=", var_name);
+        write_repr(fp, value);
     }
     return first;
 }
@@ -232,25 +367,11 @@ write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
             continue;
         }
 
-        // Skip builtins and internals
-        if (strcmp(var_name, "__builtins__") == 0 ||
-            strcmp(var_name, "__name__") == 0 ||
-            strcmp(var_name, "__doc__") == 0 ||
-            strcmp(var_name, "__package__") == 0 ||
-            strcmp(var_name, "__loader__") == 0 ||
-            strcmp(var_name, "__spec__") == 0 ||
-            strcmp(var_name, "__file__") == 0 ||
-            strcmp(var_name, "__cached__") == 0 ||
-            var_name[0] == '_') {
+        if (should_skip_variable(var_name, value)) {
             continue;
         }
 
         if (locals != NULL && PyDict_Contains(locals, key)) {
-            continue;
-        }
-
-        // Skip functions, classes, modules
-        if (PyFunction_Check(value) || PyType_Check(value) || PyModule_Check(value)) {
             continue;
         }
 
@@ -259,21 +380,8 @@ write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
         }
         first = 0;
 
-        PyObject *repr = PyObject_Repr(value);
-        const char *var_value = "<unrepr>";
-        if (repr == NULL) {
-            PyErr_Clear();
-        } else {
-            const char *utf8 = PyUnicode_AsUTF8(repr);
-            if (utf8 == NULL) {
-                PyErr_Clear();
-            } else {
-                var_value = utf8;
-            }
-        }
-
-        fprintf(fp, "%s=%s", var_name, var_value);
-        Py_XDECREF(repr);
+        fprintf(fp, "%s=", var_name);
+        write_repr(fp, value);
     }
 }
 
@@ -530,31 +638,23 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         int first = 1;
 
         while (PyDict_Next(locals, &pos, &key, &value) && strlen(var_buffer) < 3900) {
+            const char *var_name = PyUnicode_AsUTF8(key);
+            if (var_name == NULL) {
+                PyErr_Clear();
+                continue;
+            }
+            if (should_skip_variable(var_name, value)) {
+                continue;
+            }
+
             if (!first) {
-                strcat(var_buffer, "; ");
+                append_buffer(var_buffer, sizeof(var_buffer), "; ");
             }
             first = 0;
 
-            const char *var_name = PyUnicode_AsUTF8(key);
-            if (var_name) {
-                strcat(var_buffer, var_name);
-                strcat(var_buffer, "=");
-
-                PyObject *repr = PyObject_Repr(value);
-                if (repr == NULL) {
-                    PyErr_Clear();
-                    strncat(var_buffer, "<unrepr>", 100);
-                } else {
-                    const char *var_value = PyUnicode_AsUTF8(repr);
-                    if (var_value == NULL) {
-                        PyErr_Clear();
-                        strncat(var_buffer, "<unrepr>", 100);
-                    } else {
-                        strncat(var_buffer, var_value, 100);
-                    }
-                    Py_XDECREF(repr);
-                }
-            }
+            append_buffer(var_buffer, sizeof(var_buffer), var_name);
+            append_buffer(var_buffer, sizeof(var_buffer), "=");
+            append_repr(var_buffer, sizeof(var_buffer), value);
         }
     }
 

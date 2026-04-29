@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 // Readline support (mandatory)
 #include <readline/readline.h>
@@ -13,7 +15,6 @@
 
 #define MAX_LINE_LENGTH 4096
 #define MAX_LINES 100000
-#define MAX_FIELD_LENGTH 512
 #define MAX_BREAKPOINTS 100
 #define MAX_WATCHPOINTS 50
 #define MAX_VARS 100
@@ -22,8 +23,8 @@ typedef struct {
     long exec_order;
     char filename[512];
     int line_number;
-    char code[MAX_FIELD_LENGTH];
-    char variables[MAX_FIELD_LENGTH];
+    char *code;
+    char *variables;
 } TraceEntry;
 
 // Breakpoint structure for post-execution navigation
@@ -71,20 +72,27 @@ void print_current_entry(TraceViewer *viewer);
 void update_variable_state(TraceViewer *viewer, int entry_index);
 int check_watchpoint_triggered(TraceViewer *viewer, int entry_index, char *triggered_var, char *trigger_type, WatchpointType *wp_type);
 
+static char*
+xstrdup(const char *value) {
+    char *copy = strdup(value ? value : "");
+    if (!copy) {
+        fprintf(stderr, "Memory allocation failed\n");
+    }
+    return copy;
+}
+
 // Parse a trace line into a TraceEntry
 int parse_trace_line(char *line, TraceEntry *entry) {
     // Format: EXECUTION_ORDER|||FILENAME|||LINE_NUMBER|||CODE|||VARIABLES
-    char line_copy[MAX_LINE_LENGTH];
-    strncpy(line_copy, line, MAX_LINE_LENGTH - 1);
-    line_copy[MAX_LINE_LENGTH - 1] = '\0';
+    memset(entry, 0, sizeof(*entry));
     
     // Split by ||| delimiter
     char *parts[5] = {NULL};
     int part_count = 0;
-    char *ptr = line_copy;
+    char *ptr = line;
     char *start = ptr;
     
-    while (*ptr && part_count < 5) {
+    while (*ptr && part_count < 4) {
         if (ptr[0] == '|' && ptr[1] == '|' && ptr[2] == '|') {
             // Found delimiter
             *ptr = '\0';
@@ -116,15 +124,21 @@ int parse_trace_line(char *line, TraceEntry *entry) {
     entry->line_number = atoi(parts[2]);
     
     // Parse code
-    strncpy(entry->code, parts[3], sizeof(entry->code) - 1);
-    entry->code[sizeof(entry->code) - 1] = '\0';
+    entry->code = xstrdup(parts[3]);
+    if (!entry->code) {
+        return 0;
+    }
     
     // Parse variables (5th part, may be empty)
     if (part_count >= 5 && parts[4] && strlen(parts[4]) > 0) {
-        strncpy(entry->variables, parts[4], sizeof(entry->variables) - 1);
-        entry->variables[sizeof(entry->variables) - 1] = '\0';
+        entry->variables = xstrdup(parts[4]);
     } else {
-        entry->variables[0] = '\0';
+        entry->variables = xstrdup("");
+    }
+    if (!entry->variables) {
+        free(entry->code);
+        entry->code = NULL;
+        return 0;
     }
     
     return 1;
@@ -335,9 +349,10 @@ void parse_variables(const char *vars_str, VarState *vars, int *count, int max_v
         return;
     }
     
-    char vars_copy[MAX_FIELD_LENGTH];
-    strncpy(vars_copy, vars_str, MAX_FIELD_LENGTH - 1);
-    vars_copy[MAX_FIELD_LENGTH - 1] = '\0';
+    char *vars_copy = xstrdup(vars_str);
+    if (!vars_copy) {
+        return;
+    }
     
     char *ptr = vars_copy;
     char *start = ptr;
@@ -377,6 +392,8 @@ void parse_variables(const char *vars_str, VarState *vars, int *count, int max_v
             ptr++;
         }
     }
+
+    free(vars_copy);
 }
 
 // Check if variable was written (value changed)
@@ -610,10 +627,11 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
     viewer->breakpoint_count = 0;  // Initialize breakpoint count
     viewer->watchpoint_count = 0;  // Initialize watchpoint count
     viewer->prev_var_count = 0;    // Initialize variable state count
-    char buffer[MAX_LINE_LENGTH];
+    char *buffer = NULL;
+    size_t buffer_size = 0;
     int first_line = 1;
 
-    while (fgets(buffer, sizeof(buffer), file) && viewer->entry_count < MAX_LINES) {
+    while (getline(&buffer, &buffer_size, file) != -1 && viewer->entry_count < MAX_LINES) {
         // Skip header line
         if (first_line) {
             first_line = 0;
@@ -623,6 +641,10 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
         // Remove trailing newline
         size_t len = strlen(buffer);
         if (len > 0 && buffer[len - 1] == '\n') {
+            buffer[len - 1] = '\0';
+            len--;
+        }
+        if (len > 0 && buffer[len - 1] == '\r') {
             buffer[len - 1] = '\0';
         }
         
@@ -638,6 +660,7 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
         }
     }
 
+    free(buffer);
     fclose(file);
     viewer->current_entry = 0;
     return 1;
@@ -656,9 +679,10 @@ void print_current_entry(TraceViewer *viewer) {
             printf("\033[1;34mVariables:\033[0m\n");
             
             // Parse and display variables nicely
-            char vars_copy[MAX_FIELD_LENGTH];
-            strncpy(vars_copy, entry->variables, sizeof(vars_copy) - 1);
-            vars_copy[sizeof(vars_copy) - 1] = '\0';
+            char *vars_copy = xstrdup(entry->variables);
+            if (!vars_copy) {
+                return;
+            }
             
             char *var = strtok(vars_copy, ";");
             while (var) {
@@ -669,6 +693,7 @@ void print_current_entry(TraceViewer *viewer) {
                 }
                 var = strtok(NULL, ";");
             }
+            free(vars_copy);
         } else {
             printf("\033[1;34mVariables:\033[0m (none)\n");
         }
@@ -711,9 +736,10 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
             printf("[%ld] %s:%d\n", entry->exec_order, entry->filename, entry->line_number);
             
             // Parse and find the specific variable
-            char vars_copy[MAX_FIELD_LENGTH];
-            strncpy(vars_copy, entry->variables, sizeof(vars_copy) - 1);
-            vars_copy[sizeof(vars_copy) - 1] = '\0';
+            char *vars_copy = xstrdup(entry->variables);
+            if (!vars_copy) {
+                return;
+            }
             
             char *var = strtok(vars_copy, ";");
             while (var) {
@@ -724,6 +750,7 @@ void search_variable(TraceViewer *viewer, const char *var_name) {
                 }
                 var = strtok(NULL, ";");
             }
+            free(vars_copy);
             printf("\n");
             found++;
             
@@ -937,6 +964,10 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
 
 // Free allocated memory
 void cleanup(TraceViewer *viewer) {
+    for (int i = 0; i < viewer->entry_count; i++) {
+        free(viewer->entries[i].code);
+        free(viewer->entries[i].variables);
+    }
     free(viewer->entries);
 }
 
@@ -972,6 +1003,119 @@ void print_help() {
     printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
 }
 
+static void rstrip(char *value) {
+    size_t len = strlen(value);
+    while (len > 0 && isspace((unsigned char)value[len - 1])) {
+        value[len - 1] = '\0';
+        len--;
+    }
+}
+
+static int is_python_identifier(const char *value) {
+    if (!value || value[0] == '\0') {
+        return 0;
+    }
+    if (!(isalpha((unsigned char)value[0]) || value[0] == '_')) {
+        return 0;
+    }
+    for (const char *p = value + 1; *p; p++) {
+        if (!(isalnum((unsigned char)*p) || *p == '_')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char* lookup_variable_repr(const char *vars_str, const char *name) {
+    char *vars_copy = xstrdup(vars_str);
+    if (!vars_copy) {
+        return NULL;
+    }
+
+    char *saveptr = NULL;
+    char *var = strtok_r(vars_copy, ";", &saveptr);
+    while (var) {
+        while (isspace((unsigned char)*var)) var++;
+        char *eq = strchr(var, '=');
+        if (eq) {
+            *eq = '\0';
+            rstrip(var);
+            if (strcmp(var, name) == 0) {
+                char *result = xstrdup(eq + 1);
+                free(vars_copy);
+                return result;
+            }
+        }
+        var = strtok_r(NULL, ";", &saveptr);
+    }
+
+    free(vars_copy);
+    return NULL;
+}
+
+static void write_python_string(FILE *f, const char *value) {
+    fputc('\'', f);
+    for (const char *p = value; *p; p++) {
+        switch (*p) {
+        case '\\':
+            fputs("\\\\", f);
+            break;
+        case '\'':
+            fputs("\\'", f);
+            break;
+        case '\n':
+            fputs("\\n", f);
+            break;
+        case '\r':
+            fputs("\\r", f);
+            break;
+        default:
+            fputc(*p, f);
+            break;
+        }
+    }
+    fputc('\'', f);
+}
+
+static void write_literal_loads(FILE *f, const char *vars_str) {
+    char *vars_copy = xstrdup(vars_str);
+    if (!vars_copy) {
+        return;
+    }
+
+    fprintf(f, "import ast\n");
+    fprintf(f, "def __trace_load(name, value):\n");
+    fprintf(f, "    try:\n");
+    fprintf(f, "        globals()[name] = ast.literal_eval(value)\n");
+    fprintf(f, "    except Exception:\n");
+    fprintf(f, "        pass\n");
+
+    char *saveptr = NULL;
+    char *var = strtok_r(vars_copy, ";", &saveptr);
+    while (var) {
+        while (isspace((unsigned char)*var)) var++;
+        char *eq = strchr(var, '=');
+        if (eq) {
+            *eq = '\0';
+            rstrip(var);
+            if (is_python_identifier(var)) {
+                fprintf(f, "__trace_load(");
+                write_python_string(f, var);
+                fprintf(f, ", ");
+                write_python_string(f, eq + 1);
+                fprintf(f, ")\n");
+            }
+        }
+        var = strtok_r(NULL, ";", &saveptr);
+    }
+
+    free(vars_copy);
+}
+
+static int command_failed(int status) {
+    return status == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0;
+}
+
 void eval_expression(TraceViewer *viewer, const char *expression) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
         printf("\033[1;31m✗ No current entry\033[0m\n");
@@ -981,6 +1125,20 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
     const char *temp_file = "trace_eval_temp.py";
+
+    if (is_python_identifier(expression)) {
+        char *captured_value = lookup_variable_repr(entry->variables, expression);
+        if (captured_value) {
+            printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
+            printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+            printf("Result: %s\n", captured_value);
+            printf("Type: captured repr\n");
+            printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+            free(captured_value);
+            return;
+        }
+    }
 
     // is an import, just add it to the file and return
     if(strncmp(expression, "import ", 7) == 0 || strncmp(expression, "from ", 5) == 0){
@@ -1000,7 +1158,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
         if (output) {
             int status = pclose(output);
-            if (WEXITSTATUS(status) != 0) failed = 1;
+            if (command_failed(status)) failed = 1;
         }
 
         if (failed) {
@@ -1023,9 +1181,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     long pos_before = ftell(f);
 
-    if (strlen(entry->variables) > 0) {
-        fprintf(f, "%s\n", entry->variables);
-    }
+    write_literal_loads(f, entry->variables);
 
     fprintf(f, "__r=%s\n", expression);
     fprintf(f, "print(f'Result: {__r}')\n");
@@ -1047,7 +1203,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
         }
 
         int status = pclose(output);
-        if (WEXITSTATUS(status) != 0) {
+        if (command_failed(status)) {
             printf("\033[1;31m✗ Evaluation failed\033[0m\n");
         }
     } else {
