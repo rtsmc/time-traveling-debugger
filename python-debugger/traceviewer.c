@@ -1053,6 +1053,13 @@ static char* lookup_variable_repr(const char *vars_str, const char *name) {
     return NULL;
 }
 
+static char* lookup_direct_captured_identifier(TraceEntry *entry, const char *expression) {
+    if (!is_python_identifier(expression)) {
+        return NULL;
+    }
+    return lookup_variable_repr(entry->variables, expression);
+}
+
 static void write_python_string(FILE *f, const char *value) {
     fputc('\'', f);
     for (const char *p = value; *p; p++) {
@@ -1083,10 +1090,12 @@ static void write_literal_loads(FILE *f, const char *vars_str) {
         return;
     }
 
-    fprintf(f, "import ast\n");
+    fprintf(f, "import ast as __trace_ast\n");
+    fprintf(f, "__trace_loaded_names = set()\n");
     fprintf(f, "def __trace_load(name, value):\n");
     fprintf(f, "    try:\n");
-    fprintf(f, "        globals()[name] = ast.literal_eval(value)\n");
+    fprintf(f, "        globals()[name] = __trace_ast.literal_eval(value)\n");
+    fprintf(f, "        __trace_loaded_names.add(name)\n");
     fprintf(f, "    except Exception:\n");
     fprintf(f, "        pass\n");
 
@@ -1116,6 +1125,31 @@ static int command_failed(int status) {
     return status == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0;
 }
 
+static int append_output(char **buffer, size_t *length, size_t *capacity, const char *text) {
+    size_t text_len = strlen(text);
+    size_t needed = *length + text_len + 1;
+
+    if (needed > *capacity) {
+        size_t new_capacity = *capacity ? *capacity : MAX_LINE_LENGTH;
+        while (new_capacity < needed) {
+            new_capacity *= 2;
+        }
+
+        char *new_buffer = realloc(*buffer, new_capacity);
+        if (!new_buffer) {
+            return 0;
+        }
+
+        *buffer = new_buffer;
+        *capacity = new_capacity;
+    }
+
+    memcpy(*buffer + *length, text, text_len);
+    *length += text_len;
+    (*buffer)[*length] = '\0';
+    return 1;
+}
+
 void eval_expression(TraceViewer *viewer, const char *expression) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
         printf("\033[1;31m✗ No current entry\033[0m\n");
@@ -1125,20 +1159,6 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
     const char *temp_file = "trace_eval_temp.py";
-
-    if (is_python_identifier(expression)) {
-        char *captured_value = lookup_variable_repr(entry->variables, expression);
-        if (captured_value) {
-            printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
-            printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
-            printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
-            printf("Result: %s\n", captured_value);
-            printf("Type: captured repr\n");
-            printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
-            free(captured_value);
-            return;
-        }
-    }
 
     // is an import, just add it to the file and return
     if(strncmp(expression, "import ", 7) == 0 || strncmp(expression, "from ", 5) == 0){
@@ -1173,8 +1193,11 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     }
 
     // Eval and print
+    char *direct_captured_value = lookup_direct_captured_identifier(entry, expression);
+
     FILE *f = fopen(temp_file, "a");
     if (!f) {
+        free(direct_captured_value);
         printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
         return;
     }
@@ -1183,8 +1206,17 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     write_literal_loads(f, entry->variables);
 
+    if (direct_captured_value) {
+        fprintf(f, "if ");
+        write_python_string(f, expression);
+        fprintf(f, " not in __trace_loaded_names:\n");
+        fprintf(f, "    raise NameError(");
+        write_python_string(f, expression);
+        fprintf(f, ")\n");
+    }
+
     fprintf(f, "__r=%s\n", expression);
-    fprintf(f, "print(f'Result: {__r}')\n");
+    fprintf(f, "print(f'Result: {__r!r}')\n");
     fprintf(f, "print(f'Type: {type(__r).__name__}')\n");
     fclose(f);
 
@@ -1198,14 +1230,34 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     FILE *output = popen(command, "r");
     if (output) {
         char line[MAX_LINE_LENGTH];
+        char *captured_output = NULL;
+        size_t output_length = 0;
+        size_t output_capacity = 0;
+
         while (fgets(line, sizeof(line), output)) {
-            printf("%s", line);
+            if (!append_output(&captured_output, &output_length, &output_capacity, line)) {
+                free(captured_output);
+                pclose(output);
+                printf("\033[1;31m✗ Failed to capture evaluation output\033[0m\n");
+                goto cleanup_eval;
+            }
         }
 
         int status = pclose(output);
         if (command_failed(status)) {
-            printf("\033[1;31m✗ Evaluation failed\033[0m\n");
+            if (direct_captured_value) {
+                printf("Result: %s\n", direct_captured_value);
+                printf("Type: captured repr\n");
+            } else {
+                if (captured_output) {
+                    printf("%s", captured_output);
+                }
+                printf("\033[1;31m✗ Evaluation failed\033[0m\n");
+            }
+        } else if (captured_output) {
+            printf("%s", captured_output);
         }
+        free(captured_output);
     } else {
         printf("\033[1;31m✗ Failed to execute Python\033[0m\n");
     }
@@ -1215,6 +1267,15 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     int fd = open(temp_file, O_WRONLY);
     ftruncate(fd, pos_before);
     close(fd);
+    free(direct_captured_value);
+    return;
+
+cleanup_eval:
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+    int cleanup_fd = open(temp_file, O_WRONLY);
+    ftruncate(cleanup_fd, pos_before);
+    close(cleanup_fd);
+    free(direct_captured_value);
 }
 
 // Filename completion support - shows .py files from trace and current directory
