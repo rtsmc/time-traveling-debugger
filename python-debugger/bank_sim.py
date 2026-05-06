@@ -81,6 +81,7 @@ def main():
     print(f"Transactions: {len(TRANSACTIONS)}\n")
 
     accounts = {k: dict(v) for k, v in ACCOUNTS.items()}   # shallow-copy each account
+    x = 10
 
     processed, total_volume, error_count = process_batch(TRANSACTIONS, accounts)
 
@@ -89,6 +90,7 @@ def main():
     print(f"Processed : {len(processed)} transactions")
     print(f"Errors    : {error_count}")
     print(f"Volume    : ${total_volume:.2f}")
+    y = 15
     print(f"Alice end : ${accounts['ACC001']['balance']:.2f}")
     print(f"Bob end   : ${accounts['ACC002']['balance']:.2f}")
     print(f"Carol end : ${accounts['ACC003']['balance']:.2f}")
