@@ -5,8 +5,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <termios.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 
 // Readline support (mandatory)
 #include <readline/readline.h>
@@ -62,10 +66,23 @@ typedef struct {
     int watchpoint_count;
     VarState prev_vars[MAX_VARS];
     int prev_var_count;
+    char eval_temp_file[PATH_MAX];
+    int eval_temp_file_ready;
 } TraceViewer;
 
 // Global pointer for autocomplete (needs access to trace files)
 static TraceViewer *g_viewer = NULL;
+static int g_tui_mode = 0;
+
+static const char* g_commands[] = {
+    "n", "next", "back", "prev", "b", "break", "list", "c", "continue",
+    "rc", "show", "summary", "find", "jump", "eval", "w", "rw", "ww",
+    "listw", "clearw", "view", "help", "quit", "q", NULL
+};
+
+static const char* g_lower_views[] = {
+    "trace", "breakpoints", "log", NULL
+};
 
 // Forward declarations
 void print_current_entry(TraceViewer *viewer);
@@ -627,6 +644,8 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
     viewer->breakpoint_count = 0;  // Initialize breakpoint count
     viewer->watchpoint_count = 0;  // Initialize watchpoint count
     viewer->prev_var_count = 0;    // Initialize variable state count
+    viewer->eval_temp_file[0] = '\0';
+    viewer->eval_temp_file_ready = 0;
     char *buffer = NULL;
     size_t buffer_size = 0;
     int first_line = 1;
@@ -668,6 +687,10 @@ int read_trace_file(const char *filename, TraceViewer *viewer) {
 
 // Print the current trace entry
 void print_current_entry(TraceViewer *viewer) {
+    if (g_tui_mode) {
+        return;
+    }
+
     if (viewer->current_entry >= 0 && viewer->current_entry < viewer->entry_count) {
         TraceEntry *entry = &viewer->entries[viewer->current_entry];
         printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
@@ -964,6 +987,11 @@ void show_file(TraceViewer *viewer, const char *requested_file) {
 
 // Free allocated memory
 void cleanup(TraceViewer *viewer) {
+    if (viewer->eval_temp_file_ready) {
+        unlink(viewer->eval_temp_file);
+        viewer->eval_temp_file_ready = 0;
+    }
+
     for (int i = 0; i < viewer->entry_count; i++) {
         free(viewer->entries[i].code);
         free(viewer->entries[i].variables);
@@ -1150,6 +1178,42 @@ static int append_output(char **buffer, size_t *length, size_t *capacity, const 
     return 1;
 }
 
+static void print_eval_header(const char *expression) {
+    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+}
+
+static void print_eval_footer() {
+    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+}
+
+static void print_captured_repr_result(const char *captured_value) {
+    printf("Result: %s\n", captured_value);
+    printf("Type: captured repr\n");
+}
+
+static int ensure_eval_temp_file(TraceViewer *viewer) {
+    char template[PATH_MAX];
+    int fd;
+
+    if (viewer->eval_temp_file_ready) {
+        return 1;
+    }
+
+    snprintf(template, sizeof(template), "/tmp/traceviewer_eval_XXXXXX");
+    fd = mkstemp(template);
+    if (fd == -1) {
+        return 0;
+    }
+
+    close(fd);
+    strncpy(viewer->eval_temp_file, template, sizeof(viewer->eval_temp_file) - 1);
+    viewer->eval_temp_file[sizeof(viewer->eval_temp_file) - 1] = '\0';
+    viewer->eval_temp_file_ready = 1;
+    return 1;
+}
+
 void eval_expression(TraceViewer *viewer, const char *expression) {
     if (viewer->current_entry < 0 || viewer->current_entry >= viewer->entry_count) {
         printf("\033[1;31m✗ No current entry\033[0m\n");
@@ -1158,10 +1222,14 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
 
     TraceEntry *entry = &viewer->entries[viewer->current_entry];
 
-    const char *temp_file = "trace_eval_temp.py";
-
     // is an import, just add it to the file and return
     if(strncmp(expression, "import ", 7) == 0 || strncmp(expression, "from ", 5) == 0){
+        if (!ensure_eval_temp_file(viewer)) {
+            printf("\033[1;31m✗ Failed to create temp file\033[0m\n");
+            return;
+        }
+
+        const char *temp_file = viewer->eval_temp_file;
         FILE *f = fopen(temp_file, "a");
         if (!f) {
             printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
@@ -1171,7 +1239,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
         fprintf(f, "%s\n", expression);
         fclose(f);
   // hopefully this works
-        char command[512];
+        char command[PATH_MAX + 32];
         snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
         FILE *output = popen(command, "r");
         int failed = 0;
@@ -1195,8 +1263,29 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     // Eval and print
     char *direct_captured_value = lookup_direct_captured_identifier(entry, expression);
 
+    if (!ensure_eval_temp_file(viewer)) {
+        if (direct_captured_value) {
+            print_eval_header(expression);
+            print_captured_repr_result(direct_captured_value);
+            print_eval_footer();
+            free(direct_captured_value);
+            return;
+        }
+        free(direct_captured_value);
+        printf("\033[1;31m✗ Failed to create temp file\033[0m\n");
+        return;
+    }
+
+    const char *temp_file = viewer->eval_temp_file;
     FILE *f = fopen(temp_file, "a");
     if (!f) {
+        if (direct_captured_value) {
+            print_eval_header(expression);
+            print_captured_repr_result(direct_captured_value);
+            print_eval_footer();
+            free(direct_captured_value);
+            return;
+        }
         free(direct_captured_value);
         printf("\033[1;31m✗ Failed to open temp file\033[0m\n");
         return;
@@ -1220,12 +1309,10 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     fprintf(f, "print(f'Type: {type(__r).__name__}')\n");
     fclose(f);
 
-    char command[512];
+    char command[PATH_MAX + 32];
     snprintf(command, sizeof(command), "python3 %s 2>&1", temp_file);
 
-    printf("\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
-    printf("\033[1;33mEvaluating:\033[0m %s\n", expression);
-    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n");
+    print_eval_header(expression);
 
     FILE *output = popen(command, "r");
     if (output) {
@@ -1246,8 +1333,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
         int status = pclose(output);
         if (command_failed(status)) {
             if (direct_captured_value) {
-                printf("Result: %s\n", direct_captured_value);
-                printf("Type: captured repr\n");
+                print_captured_repr_result(direct_captured_value);
             } else {
                 if (captured_output) {
                     printf("%s", captured_output);
@@ -1262,7 +1348,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
         printf("\033[1;31m✗ Failed to execute Python\033[0m\n");
     }
 
-    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+    print_eval_footer();
 
     int fd = open(temp_file, O_WRONLY);
     ftruncate(fd, pos_before);
@@ -1271,7 +1357,7 @@ void eval_expression(TraceViewer *viewer, const char *expression) {
     return;
 
 cleanup_eval:
-    printf("\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n");
+    print_eval_footer();
     int cleanup_fd = open(temp_file, O_WRONLY);
     ftruncate(cleanup_fd, pos_before);
     close(cleanup_fd);
@@ -1383,18 +1469,14 @@ static char* filename_generator(const char* text, int state) {
 // Tab completion support
 static char* command_generator(const char* text, int state) {
     static int list_index, len;
-    static const char* commands[] = {
-        "n", "next", "back", "b", "break", "list", "clear", "c", "continue",
-        "rc", "show", "summary", "find", "jump", "help", "quit", "q", NULL
-    };
     
     if (!state) {
         list_index = 0;
         len = strlen(text);
     }
     
-    while (commands[list_index]) {
-        const char* name = commands[list_index];
+    while (g_commands[list_index]) {
+        const char* name = g_commands[list_index];
         list_index++;
         
         if (strncmp(name, text, len) == 0) {
@@ -1461,6 +1543,1570 @@ void save_readline_history() {
     }
 }
 
+static int execute_command(TraceViewer *viewer, const char *raw_cmd) {
+    char input[MAX_LINE_LENGTH];
+    char *cmd;
+
+    strncpy(input, raw_cmd, sizeof(input) - 1);
+    input[sizeof(input) - 1] = '\0';
+
+    cmd = input;
+    while (isspace((unsigned char)*cmd)) cmd++;
+    rstrip(cmd);
+
+    if (strlen(cmd) == 0) {
+        return 0;
+    }
+
+    // Handle 'n' command (next)
+    if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
+        if (viewer->current_entry < viewer->entry_count - 1) {
+            viewer->current_entry++;
+            print_current_entry(viewer);
+        } else {
+            printf("\033[1;31m✗ Already at last execution step\033[0m\n");
+        }
+    }
+    // Handle 'back' command (previous)
+    else if (strcmp(cmd, "back") == 0 || strcmp(cmd, "prev") == 0) {
+        if (viewer->current_entry > 0) {
+            viewer->current_entry--;
+            print_current_entry(viewer);
+        } else {
+            printf("\033[1;31m✗ Already at first execution step\033[0m\n");
+        }
+    }
+    // Handle 'summary' command
+    else if (strcmp(cmd, "summary") == 0) {
+        print_summary(viewer);
+    }
+    // Handle 'show' command (with optional filename)
+    else if (strncmp(cmd, "show", 4) == 0) {
+        if (cmd[4] == '\0') {
+            // Just 'show' - show current file
+            show_file(viewer, NULL);
+        } else if (cmd[4] == ' ') {
+            // 'show <filename>' - show specific file
+            char *filename = cmd + 5;
+            while (isspace((unsigned char)*filename)) filename++;
+
+            if (strlen(filename) > 0) {
+                show_file(viewer, filename);
+            } else {
+                show_file(viewer, NULL);
+            }
+        } else {
+            show_file(viewer, NULL);
+        }
+    }
+    // Handle 'help' command
+    else if (strcmp(cmd, "help") == 0) {
+        print_help();
+    }
+    // Handle ':<number>' command (jump to execution)
+    else if (cmd[0] == ':') {
+        long user_num = atol(cmd + 1);
+        // Convert from 1-based user input to 0-based internal execution order
+        long exec_num = user_num - 1;
+        int found = 0;
+
+        // Validate range (user sees 1 to N, we search for 0 to N-1)
+        if (user_num < 1 || user_num > viewer->entry_count) {
+            printf("\033[1;31m✗ Execution #%ld out of range. Valid range: 1-%d\033[0m\n",
+                   user_num, viewer->entry_count);
+        } else {
+            for (int i = 0; i < viewer->entry_count; i++) {
+                if (viewer->entries[i].exec_order == exec_num) {
+                    viewer->current_entry = i;
+                    print_current_entry(viewer);
+                    found = 1;
+                    break;
+                }
+            }
+
+            if (!found) {
+                printf("\033[1;31m✗ Execution #%ld not found in trace\033[0m\n", user_num);
+            }
+        }
+    }
+    // Handle 'find <var>' command
+    else if (strncmp(cmd, "find ", 5) == 0) {
+        char *var_name = cmd + 5;
+        while (isspace((unsigned char)*var_name)) var_name++;
+        if (strlen(var_name) > 0) {
+            search_variable(viewer, var_name);
+        } else {
+            printf("\033[1;31m✗ Usage: find <variable_name>\033[0m\n");
+        }
+    }
+    // Handle 'b <file> <line>' command (set breakpoint)
+    else if (cmd[0] == 'b' && (cmd[1] == ' ' || cmd[1] == '\0')) {
+        if (cmd[1] == '\0') {
+            // Just 'b' - list breakpoints
+            list_breakpoints(viewer);
+        } else {
+            // 'b <file> <line>' - set breakpoint
+            char *args = cmd + 2;
+            while (isspace((unsigned char)*args)) args++;
+
+            char filename[512];
+            int line_num;
+
+            if (sscanf(args, "%s %d", filename, &line_num) == 2) {
+                add_breakpoint(viewer, filename, line_num);
+            } else {
+                printf("\033[1;31m✗ Usage: b <file> <line>\033[0m\n");
+                printf("Example: b test.py 25\n");
+            }
+        }
+    }
+    // Handle 'list' command (list breakpoints)
+    else if (strcmp(cmd, "list") == 0) {
+        list_breakpoints(viewer);
+    }
+    // Handle 'c' command (continue to next breakpoint)
+    else if (strcmp(cmd, "c") == 0 || strcmp(cmd, "continue") == 0) {
+        continue_to_breakpoint(viewer);
+    }
+    // Handle 'rc' command (reverse continue to previous breakpoint)
+    else if (strcmp(cmd, "rc") == 0) {
+        reverse_continue_to_breakpoint(viewer);
+    }
+    // Handle 'jump <line>' command (jump to source line - old 'break' behavior)
+    else if (strncmp(cmd, "jump ", 5) == 0) {
+        int line_num = atoi(cmd + 5);
+        int found = 0;
+
+        printf("\nSearching for line %d...\n\n", line_num);
+        for (int i = 0; i < viewer->entry_count; i++) {
+            if (viewer->entries[i].line_number == line_num) {
+                viewer->current_entry = i;
+                print_current_entry(viewer);
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
+        }
+    }
+    // Handle old 'break <line>' command (redirect to 'jump')
+    else if (strncmp(cmd, "break ", 6) == 0) {
+        int line_num = atoi(cmd + 6);
+        int found = 0;
+
+        printf("\n\033[1;33mNote: 'break <line>' is deprecated. Use 'jump <line>' or 'b <file> <line>'\033[0m\n");
+        printf("Searching for line %d...\n\n", line_num);
+        for (int i = 0; i < viewer->entry_count; i++) {
+            if (viewer->entries[i].line_number == line_num) {
+                viewer->current_entry = i;
+                print_current_entry(viewer);
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
+        }
+    }
+    // Handle 'w <var>' command (set watchpoint - both read and write)
+    else if (cmd[0] == 'w' && (cmd[1] == ' ' || cmd[1] == '\0')) {
+        if (cmd[1] == '\0') {
+            printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
+            printf("Example: w counter\n");
+        } else {
+            char *var_name = cmd + 2;
+            while (isspace((unsigned char)*var_name)) var_name++;
+            if (strlen(var_name) > 0) {
+                add_watchpoint(viewer, var_name, WATCHPOINT_BOTH);
+            } else {
+                printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
+            }
+        }
+    }
+    // Handle 'rw <var>' command (set read watchpoint)
+    else if (strncmp(cmd, "rw ", 3) == 0) {
+        char *var_name = cmd + 3;
+        while (isspace((unsigned char)*var_name)) var_name++;
+        if (strlen(var_name) > 0) {
+            add_watchpoint(viewer, var_name, WATCHPOINT_READ);
+        } else {
+            printf("\033[1;31m✗ Usage: rw <variable>\033[0m\n");
+            printf("Example: rw counter\n");
+        }
+    }
+    // Handle 'ww <var>' command (set write watchpoint)
+    else if (strncmp(cmd, "ww ", 3) == 0) {
+        char *var_name = cmd + 3;
+        while (isspace((unsigned char)*var_name)) var_name++;
+        if (strlen(var_name) > 0) {
+            add_watchpoint(viewer, var_name, WATCHPOINT_WRITE);
+        } else {
+            printf("\033[1;31m✗ Usage: ww <variable>\033[0m\n");
+            printf("Example: ww counter\n");
+        }
+    }
+    // Handle 'listw' command (list watchpoints)
+    else if (strcmp(cmd, "listw") == 0) {
+        list_watchpoints(viewer);
+    }
+    // Handle 'clearw [num]' command (clear watchpoint(s))
+    else if (strncmp(cmd, "clearw", 6) == 0) {
+        if (cmd[6] == '\0') {
+            // Clear all watchpoints
+            clear_watchpoint(viewer, -1);
+        } else if (cmd[6] == ' ') {
+            // Clear specific watchpoint
+            int wp_num = atoi(cmd + 7);
+            if (wp_num > 0 && wp_num <= viewer->watchpoint_count) {
+                clear_watchpoint(viewer, wp_num - 1);
+            } else {
+                printf("\033[1;31m✗ Invalid watchpoint number. Use 'listw' to see watchpoints.\033[0m\n");
+            }
+        }
+    }
+    // Handle 'q' or 'quit' command
+    else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
+        return 1;
+    }
+    // Eval
+    else if (strncmp(cmd, "eval ", 5) == 0) {
+        char *expression = cmd + 5;
+        while (isspace((unsigned char)*expression)) expression++;
+        if (strlen(expression) > 0) {
+            eval_expression(viewer, expression);
+        } else {
+            printf("\033[1;31m✗ Usage: eval <expression>\033[0m\n");
+            printf("Example: eval x + y\n");
+            printf("Example: eval len(my_list)\n");
+        }
+    } else {
+        printf("\033[1;31m✗ Unknown command. Type 'help' for available commands\033[0m\n");
+    }
+
+    return 0;
+}
+
+static void run_readline_viewer(TraceViewer *viewer) {
+    char *last_command = NULL;
+
+    // Initialize readline for command history and tab completion
+    init_readline();
+
+    print_help();
+
+    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete commands and .py files)\n");
+
+    // Print first entry
+    print_current_entry(viewer);
+
+    while (1) {
+        char *cmd;
+        char prompt[64];
+        snprintf(prompt, sizeof(prompt), "\n\033[1;32m[%d/%d]\033[0m > ",
+                 viewer->current_entry + 1, viewer->entry_count);
+
+        // Use readline for better line editing and history
+        char *line = readline(prompt);
+
+        // Check for EOF (Ctrl+D)
+        if (!line) {
+            printf("\n");
+            break;
+        }
+
+        // Trim whitespace
+        cmd = line;
+        while (isspace((unsigned char)*cmd)) cmd++;
+
+        // Handle empty input - repeat last command
+        if (strlen(cmd) == 0) {
+            free(line);
+            if (last_command) {
+                if (execute_command(viewer, last_command)) {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Add non-empty command to history
+        add_history(line);
+
+        if (last_command) {
+            free(last_command);
+        }
+        last_command = xstrdup(cmd);
+
+        if (execute_command(viewer, cmd)) {
+            free(line);
+            break;
+        }
+
+        free(line);
+    }
+
+    // Save command history
+    save_readline_history();
+
+    if (last_command) {
+        free(last_command);
+    }
+}
+
+#define TUI_MAX_LOG_LINES 200
+#define TUI_LOG_LINE_LENGTH 1024
+
+typedef enum {
+    TUI_LOWER_TRACE,
+    TUI_LOWER_BREAKPOINTS,
+    TUI_LOWER_LOG
+} TuiLowerView;
+
+typedef struct {
+    TraceViewer *viewer;
+    char command[MAX_LINE_LENGTH];
+    int command_len;
+    int command_cursor;
+    char last_command[MAX_LINE_LENGTH];
+    char status[512];
+    char log_lines[TUI_MAX_LOG_LINES][TUI_LOG_LINE_LENGTH];
+    int log_count;
+    TuiLowerView lower_view;
+    int help_open;
+    int help_scroll;
+    int needs_render;
+    int running;
+} TuiState;
+
+static const char* g_tui_help_lines[] = {
+    "Traceviewer TUI",
+    "",
+    "Navigation",
+    "  n, next              step to next execution",
+    "  back, prev           step to previous execution",
+    "  :<number>            jump to execution number",
+    "  c, continue          continue to next breakpoint or watchpoint",
+    "  rc                   reverse-continue to previous breakpoint or watchpoint",
+    "  jump <line>          jump to first trace entry for a source line",
+    "",
+    "Breakpoints and Watchpoints",
+    "  b <file> <line>      set a breakpoint",
+    "  b, list              list breakpoints",
+    "  w <var>              watch variable reads and writes",
+    "  rw <var>             watch variable reads",
+    "  ww <var>             watch variable writes",
+    "  listw                list watchpoints",
+    "  clearw [num]         clear one watchpoint or all watchpoints",
+    "",
+    "Inspection",
+    "  show [file]          print source file in the log",
+    "  summary              print trace summary in the log",
+    "  find <var>           search captured variables",
+    "  eval <expr>          evaluate a Python expression from captured values",
+    "",
+    "TUI",
+    "  help                 open this help view",
+    "  view trace           show trace history in the lower pane",
+    "  view breakpoints     show breakpoints and watchpoints in the lower pane",
+    "  view log             show command output in the lower pane",
+    "  F2                   cycle lower pane",
+    "  Tab                  complete command or filename",
+    "  Up/Down              step back/forward when the command line is empty",
+    "  PageUp/PageDown      scroll this help view",
+    "  Esc                  close help",
+    "  q, quit              exit traceviewer",
+    NULL
+};
+
+static struct termios g_original_termios;
+static int g_raw_mode_enabled = 0;
+
+static void tui_disable_raw_mode() {
+    if (g_raw_mode_enabled) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_original_termios);
+        g_raw_mode_enabled = 0;
+    }
+}
+
+static int tui_enable_raw_mode() {
+    struct termios raw;
+
+    if (tcgetattr(STDIN_FILENO, &g_original_termios) == -1) {
+        return 0;
+    }
+
+    raw = g_original_termios;
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= ~(OPOST);
+    raw.c_cflag |= (CS8);
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 1;
+
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) {
+        return 0;
+    }
+
+    g_raw_mode_enabled = 1;
+    return 1;
+}
+
+static void tui_get_size(int *rows, int *cols) {
+    struct winsize ws;
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+        *rows = 24;
+        *cols = 80;
+        return;
+    }
+
+    *rows = ws.ws_row;
+    *cols = ws.ws_col;
+}
+
+static void tui_move(int row, int col) {
+    printf("\033[%d;%dH", row, col);
+}
+
+static void tui_clear() {
+    printf("\033[2J\033[H");
+}
+
+static void tui_write_clipped(int row, int col, int width, const char *text) {
+    char buffer[4096];
+    int out = 0;
+    int used = 0;
+
+    if (width <= 0) {
+        return;
+    }
+
+    for (const char *p = text; *p && used < width && out < (int)sizeof(buffer) - 1; p++) {
+        unsigned char ch = (unsigned char)*p;
+
+        if (ch == '\n' || ch == '\r') {
+            break;
+        }
+        if (ch == '\t') {
+            int spaces = 4 - (used % 4);
+            while (spaces-- > 0 && used < width && out < (int)sizeof(buffer) - 1) {
+                buffer[out++] = ' ';
+                used++;
+            }
+            continue;
+        }
+        if (iscntrl(ch)) {
+            ch = ' ';
+        }
+
+        buffer[out++] = (char)ch;
+        used++;
+    }
+    buffer[out] = '\0';
+
+    tui_move(row, col);
+    printf("%-*s", width, buffer);
+}
+
+static void tui_printf_clipped(int row, int col, int width, const char *fmt, ...) {
+    char buffer[4096];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    tui_write_clipped(row, col, width, buffer);
+}
+
+static void tui_draw_horizontal(int row, int col, int width) {
+    if (width <= 0) {
+        return;
+    }
+
+    tui_move(row, col);
+    for (int i = 0; i < width; i++) {
+        putchar('-');
+    }
+}
+
+static void tui_draw_box(int row, int col, int height, int width, const char *title) {
+    if (height < 2 || width < 2) {
+        return;
+    }
+
+    tui_move(row, col);
+    putchar('+');
+    for (int i = 0; i < width - 2; i++) {
+        putchar('-');
+    }
+    putchar('+');
+
+    for (int r = row + 1; r < row + height - 1; r++) {
+        tui_move(r, col);
+        putchar('|');
+        for (int i = 0; i < width - 2; i++) {
+            putchar(' ');
+        }
+        putchar('|');
+    }
+
+    tui_move(row + height - 1, col);
+    putchar('+');
+    for (int i = 0; i < width - 2; i++) {
+        putchar('-');
+    }
+    putchar('+');
+
+    if (title && title[0] != '\0' && width > 4) {
+        char title_buffer[512];
+        snprintf(title_buffer, sizeof(title_buffer), " %s ", title);
+        tui_write_clipped(row, col + 2, width - 4, title_buffer);
+    }
+}
+
+static void tui_strip_ansi_line(const char *input, char *output, size_t output_size) {
+    size_t out = 0;
+
+    if (output_size == 0) {
+        return;
+    }
+
+    for (const char *p = input; *p && out < output_size - 1; p++) {
+        unsigned char ch = (unsigned char)*p;
+
+        if (ch == '\033' && p[1] == '[') {
+            p += 2;
+            while (*p && !isalpha((unsigned char)*p)) {
+                p++;
+            }
+            continue;
+        }
+        if (ch == '\n' || ch == '\r') {
+            break;
+        }
+        if (ch == '\t') {
+            ch = ' ';
+        }
+        if (ch >= 128) {
+            if (out == 0 || output[out - 1] != '-') {
+                output[out++] = '-';
+            }
+            continue;
+        }
+        if (iscntrl(ch)) {
+            continue;
+        }
+
+        output[out++] = (char)ch;
+    }
+
+    output[out] = '\0';
+}
+
+static int tui_is_separator_log_line(const char *line) {
+    int saw_separator = 0;
+
+    for (const char *p = line; *p; p++) {
+        if (isspace((unsigned char)*p)) {
+            continue;
+        }
+        if (*p == '-' || *p == '=') {
+            saw_separator = 1;
+            continue;
+        }
+        return 0;
+    }
+
+    return saw_separator;
+}
+
+static void tui_add_log_line(TuiState *state, const char *line) {
+    char clean[TUI_LOG_LINE_LENGTH];
+    size_t clean_len;
+
+    tui_strip_ansi_line(line, clean, sizeof(clean));
+    if (clean[0] == '\0' || tui_is_separator_log_line(clean)) {
+        return;
+    }
+
+    if (state->log_count == TUI_MAX_LOG_LINES) {
+        memmove(state->log_lines, state->log_lines + 1,
+                sizeof(state->log_lines[0]) * (TUI_MAX_LOG_LINES - 1));
+        state->log_count--;
+    }
+
+    clean_len = strnlen(clean, TUI_LOG_LINE_LENGTH - 1);
+    memcpy(state->log_lines[state->log_count], clean, clean_len);
+    state->log_lines[state->log_count][clean_len] = '\0';
+    state->log_count++;
+}
+
+static void tui_add_output(TuiState *state, const char *output) {
+    char line[TUI_LOG_LINE_LENGTH];
+    int pos = 0;
+
+    if (!output || output[0] == '\0') {
+        return;
+    }
+
+    for (const char *p = output; ; p++) {
+        if (*p == '\n' || *p == '\0' || pos >= TUI_LOG_LINE_LENGTH - 1) {
+            line[pos] = '\0';
+            tui_add_log_line(state, line);
+            pos = 0;
+            if (*p == '\0') {
+                break;
+            }
+            continue;
+        }
+        line[pos++] = *p;
+    }
+}
+
+static int tui_line_has_breakpoint(TraceViewer *viewer, const char *filename, int line_number) {
+    for (int i = 0; i < viewer->breakpoint_count; i++) {
+        if (viewer->breakpoints[i].line_number == line_number &&
+            filenames_match(viewer->breakpoints[i].filename, filename)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static FILE* tui_open_current_source(TraceViewer *viewer, char *resolved_path, size_t resolved_size) {
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+    FILE *file = fopen(entry->filename, "r");
+
+    if (file) {
+        strncpy(resolved_path, entry->filename, resolved_size - 1);
+        resolved_path[resolved_size - 1] = '\0';
+        return file;
+    }
+
+    file = try_open_with_trace_dir(get_basename(entry->filename), viewer, resolved_path, resolved_size);
+    if (file) {
+        resolved_path[resolved_size - 1] = '\0';
+    }
+
+    return file;
+}
+
+static void tui_render_header(TuiState *state, int cols) {
+    TraceViewer *viewer = state->viewer;
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+    const char *stop_reason = is_at_breakpoint(viewer, viewer->current_entry) ? "breakpoint" : "line";
+
+    tui_draw_box(1, 1, 3, cols, "");
+    tui_printf_clipped(2, 3, cols - 4,
+                       "target %s / execution %d of %d / frame %s:%d / status paused / stop %s",
+                       get_basename(entry->filename),
+                       viewer->current_entry + 1,
+                       viewer->entry_count,
+                       get_basename(entry->filename),
+                       entry->line_number,
+                       stop_reason);
+}
+
+static void tui_render_source(TuiState *state, int row, int col, int height, int width) {
+    TraceViewer *viewer = state->viewer;
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+    char resolved_path[1026] = {0};
+    FILE *file;
+    int inner_rows = height - 2;
+    int start_line;
+    int end_line;
+    int line_num = 1;
+    int out_row = row + 1;
+
+    tui_draw_box(row, col, height, width, "source / current line centered");
+
+    if (inner_rows <= 0) {
+        return;
+    }
+
+    file = tui_open_current_source(viewer, resolved_path, sizeof(resolved_path));
+    if (!file) {
+        tui_printf_clipped(row + 1, col + 2, width - 4, "%s:%d", entry->filename, entry->line_number);
+        tui_printf_clipped(row + 2, col + 2, width - 4, "%s", entry->code);
+        return;
+    }
+
+    start_line = entry->line_number - inner_rows / 2;
+    if (start_line < 1) {
+        start_line = 1;
+    }
+    end_line = start_line + inner_rows - 1;
+
+    char line[MAX_LINE_LENGTH];
+    while (fgets(line, sizeof(line), file)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
+
+        if (line_num >= start_line && line_num <= end_line && out_row < row + height - 1) {
+            char marker = ' ';
+            char rendered[MAX_LINE_LENGTH + 64];
+            int current = line_num == entry->line_number;
+
+            if (current) {
+                marker = '>';
+            } else if (tui_line_has_breakpoint(viewer, resolved_path, line_num)) {
+                marker = 'B';
+            }
+
+            snprintf(rendered, sizeof(rendered), "%c %5d | %s", marker, line_num, line);
+            if (current) {
+                printf("\033[7m");
+                tui_write_clipped(out_row, col + 1, width - 2, rendered);
+                printf("\033[0m");
+            } else if (marker == 'B') {
+                printf("\033[31m");
+                tui_write_clipped(out_row, col + 1, width - 2, rendered);
+                printf("\033[0m");
+            } else {
+                tui_write_clipped(out_row, col + 1, width - 2, rendered);
+            }
+            out_row++;
+        }
+
+        if (line_num > end_line) {
+            break;
+        }
+        line_num++;
+    }
+
+    fclose(file);
+}
+
+static const char* tui_watchpoint_type_name(WatchpointType type) {
+    if (type == WATCHPOINT_READ) {
+        return "read";
+    }
+    if (type == WATCHPOINT_WRITE) {
+        return "write";
+    }
+    return "read/write";
+}
+
+static const char* tui_find_var_value(VarState *vars, int count, const char *name) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(vars[i].name, name) == 0) {
+            return vars[i].value;
+        }
+    }
+
+    return NULL;
+}
+
+static int tui_help_line_count() {
+    int count = 0;
+
+    while (g_tui_help_lines[count]) {
+        count++;
+    }
+
+    return count;
+}
+
+static void tui_render_help(TuiState *state, int row, int col, int height, int width) {
+    int content_rows = height - 2;
+    int help_lines = tui_help_line_count();
+    int max_scroll = help_lines - content_rows;
+
+    if (max_scroll < 0) {
+        max_scroll = 0;
+    }
+    if (state->help_scroll > max_scroll) {
+        state->help_scroll = max_scroll;
+    }
+
+    tui_draw_box(row, col, height, width, "help / command reference");
+
+    for (int i = 0; i < content_rows && i + state->help_scroll < help_lines; i++) {
+        tui_write_clipped(row + 1 + i, col + 2, width - 4,
+                          g_tui_help_lines[i + state->help_scroll]);
+    }
+
+    if (max_scroll > 0) {
+        tui_printf_clipped(row + height - 1, col + width - 24, 20,
+                           " %d/%d ",
+                           state->help_scroll + 1,
+                           max_scroll + 1);
+    }
+}
+
+static void tui_append_text(char *dest, size_t dest_size, size_t *dest_len, const char *text) {
+    size_t available;
+    size_t copy_len;
+
+    if (*dest_len >= dest_size - 1) {
+        return;
+    }
+
+    available = dest_size - *dest_len - 1;
+    copy_len = strnlen(text, available);
+    memcpy(dest + *dest_len, text, copy_len);
+    *dest_len += copy_len;
+    dest[*dest_len] = '\0';
+}
+
+static void tui_render_locals(TuiState *state, int row, int col, int height, int width) {
+    TraceViewer *viewer = state->viewer;
+    TraceEntry *entry = &viewer->entries[viewer->current_entry];
+    VarState curr_vars[MAX_VARS];
+    VarState prev_vars[MAX_VARS];
+    int curr_count = 0;
+    int prev_count = 0;
+    int out_row = row + 1;
+    int last_row = row + height - 1;
+
+    tui_draw_box(row, col, height, width, "locals / watches / diff-highlighted");
+
+    parse_variables(entry->variables, curr_vars, &curr_count, MAX_VARS);
+    if (viewer->current_entry > 0) {
+        parse_variables(viewer->entries[viewer->current_entry - 1].variables,
+                        prev_vars, &prev_count, MAX_VARS);
+    }
+
+    tui_printf_clipped(out_row++, col + 2, width - 4,
+                       "locals %d  watches %d  changed marked *",
+                       curr_count, viewer->watchpoint_count);
+    tui_draw_horizontal(out_row++, col + 1, width - 2);
+
+    if (curr_count == 0 && out_row < last_row) {
+        tui_printf_clipped(out_row++, col + 2, width - 4, "(no locals captured)");
+    }
+
+    for (int i = 0; i < curr_count && out_row < last_row; i++) {
+        char rendered[1200];
+        size_t rendered_len = 0;
+        int changed = variable_written(curr_vars[i].name, prev_vars, prev_count,
+                                       curr_vars, curr_count);
+
+        rendered[rendered_len++] = changed ? '*' : ' ';
+        rendered[rendered_len++] = ' ';
+        rendered[rendered_len] = '\0';
+        tui_append_text(rendered, sizeof(rendered), &rendered_len, curr_vars[i].name);
+        tui_append_text(rendered, sizeof(rendered), &rendered_len, " = ");
+        tui_append_text(rendered, sizeof(rendered), &rendered_len, curr_vars[i].value);
+
+        if (changed) {
+            printf("\033[33m");
+            tui_write_clipped(out_row, col + 2, width - 4, rendered);
+            printf("\033[0m");
+        } else {
+            tui_write_clipped(out_row, col + 2, width - 4, rendered);
+        }
+        out_row++;
+    }
+
+    if (viewer->watchpoint_count > 0 && out_row + 1 < last_row) {
+        tui_draw_horizontal(out_row++, col + 1, width - 2);
+        tui_printf_clipped(out_row++, col + 2, width - 4, "watches");
+        for (int i = 0; i < viewer->watchpoint_count && out_row < last_row; i++) {
+            const char *value = tui_find_var_value(curr_vars, curr_count,
+                                                   viewer->watchpoints[i].variable);
+            tui_printf_clipped(out_row++, col + 2, width - 4,
+                               "%s (%s) = %s",
+                               viewer->watchpoints[i].variable,
+                               tui_watchpoint_type_name(viewer->watchpoints[i].type),
+                               value ? value : "(not captured)");
+        }
+    }
+}
+
+static void tui_render_lower_trace(TuiState *state, int row, int col, int rows, int width) {
+    TraceViewer *viewer = state->viewer;
+    int start = viewer->current_entry - rows / 2;
+
+    if (start < 0) {
+        start = 0;
+    }
+    if (start + rows > viewer->entry_count) {
+        start = viewer->entry_count - rows;
+        if (start < 0) {
+            start = 0;
+        }
+    }
+
+    for (int i = 0; i < rows && start + i < viewer->entry_count; i++) {
+        int index = start + i;
+        TraceEntry *entry = &viewer->entries[index];
+        char rendered[MAX_LINE_LENGTH + 128];
+        char marker = index == viewer->current_entry ? '>' : ' ';
+
+        snprintf(rendered, sizeof(rendered), "%c [%ld] %s:%d  %s",
+                 marker, entry->exec_order, get_basename(entry->filename),
+                 entry->line_number, entry->code);
+        if (index == viewer->current_entry) {
+            printf("\033[7m");
+            tui_write_clipped(row + i, col, width, rendered);
+            printf("\033[0m");
+        } else {
+            tui_write_clipped(row + i, col, width, rendered);
+        }
+    }
+}
+
+static void tui_render_lower_breakpoints(TuiState *state, int row, int col, int rows, int width) {
+    TraceViewer *viewer = state->viewer;
+    int out_row = row;
+
+    if (viewer->breakpoint_count == 0 && viewer->watchpoint_count == 0) {
+        tui_write_clipped(out_row, col, width, "no breakpoints or watchpoints");
+        return;
+    }
+
+    if (viewer->breakpoint_count > 0 && out_row < row + rows) {
+        tui_write_clipped(out_row++, col, width, "breakpoints");
+        for (int i = 0; i < viewer->breakpoint_count && out_row < row + rows; i++) {
+            tui_printf_clipped(out_row++, col, width, "%2d  %s:%d",
+                               i + 1,
+                               viewer->breakpoints[i].filename,
+                               viewer->breakpoints[i].line_number);
+        }
+    }
+
+    if (viewer->watchpoint_count > 0 && out_row < row + rows) {
+        tui_write_clipped(out_row++, col, width, "watchpoints");
+        for (int i = 0; i < viewer->watchpoint_count && out_row < row + rows; i++) {
+            tui_printf_clipped(out_row++, col, width, "%2d  %s (%s)",
+                               i + 1,
+                               viewer->watchpoints[i].variable,
+                               tui_watchpoint_type_name(viewer->watchpoints[i].type));
+        }
+    }
+}
+
+static void tui_render_lower_log(TuiState *state, int row, int col, int rows, int width) {
+    int start = state->log_count - rows;
+
+    if (start < 0) {
+        start = 0;
+    }
+
+    for (int i = 0; i < rows && start + i < state->log_count; i++) {
+        tui_write_clipped(row + i, col, width, state->log_lines[start + i]);
+    }
+}
+
+static void tui_render_lower(TuiState *state, int row, int col, int height, int width) {
+    const char *selected;
+    char title[128];
+    int content_rows = height - 2;
+
+    if (state->lower_view == TUI_LOWER_TRACE) {
+        selected = "F2: [trace] breakpoints log";
+    } else if (state->lower_view == TUI_LOWER_BREAKPOINTS) {
+        selected = "F2: trace [breakpoints] log";
+    } else {
+        selected = "F2: trace breakpoints [log]";
+    }
+
+    snprintf(title, sizeof(title), "%s", selected);
+    tui_draw_box(row, col, height, width, title);
+
+    if (content_rows <= 0) {
+        return;
+    }
+
+    if (state->lower_view == TUI_LOWER_TRACE) {
+        tui_render_lower_trace(state, row + 1, col + 2, content_rows, width - 4);
+    } else if (state->lower_view == TUI_LOWER_BREAKPOINTS) {
+        tui_render_lower_breakpoints(state, row + 1, col + 2, content_rows, width - 4);
+    } else {
+        tui_render_lower_log(state, row + 1, col + 2, content_rows, width - 4);
+    }
+}
+
+static void tui_render_command(TuiState *state, int row, int cols) {
+    char prompt[MAX_LINE_LENGTH + 16];
+    int cursor_col;
+
+    tui_draw_box(row, 1, 3, cols, "");
+    snprintf(prompt, sizeof(prompt), ": %s", state->command);
+    tui_write_clipped(row + 1, 3, cols - 4, prompt);
+
+    if (state->status[0] != '\0') {
+        tui_write_clipped(row, 3, cols - 4, state->status);
+    } else {
+        tui_write_clipped(row, 3, cols - 4,
+                          "Tab completes / F2 switches lower pane / help opens reference / Ctrl-C quits");
+    }
+
+    cursor_col = 5 + state->command_cursor;
+    if (cursor_col > cols - 2) {
+        cursor_col = cols - 2;
+    }
+    tui_move(row + 1, cursor_col);
+}
+
+static void tui_render(TuiState *state) {
+    int rows;
+    int cols;
+    int header_h = 3;
+    int command_h = 3;
+    int lower_h;
+    int middle_h;
+    int middle_row;
+    int lower_row;
+    int command_row;
+    int source_w;
+    int locals_w;
+
+    tui_get_size(&rows, &cols);
+
+    if (rows < 20 || cols < 70) {
+        tui_clear();
+        tui_write_clipped(1, 1, cols, "Terminal too small for traceviewer TUI. Resize to at least 70x20.");
+        fflush(stdout);
+        return;
+    }
+
+    lower_h = rows >= 32 ? 8 : 6;
+    middle_h = rows - header_h - lower_h - command_h;
+    if (middle_h < 8) {
+        lower_h = 5;
+        middle_h = rows - header_h - lower_h - command_h;
+    }
+
+    middle_row = header_h + 1;
+    lower_row = middle_row + middle_h;
+    command_row = rows - command_h + 1;
+    locals_w = cols / 3;
+    if (locals_w < 28) {
+        locals_w = 28;
+    }
+    source_w = cols - locals_w;
+
+    tui_clear();
+    printf("\033[?25l");
+
+    tui_render_header(state, cols);
+    if (state->help_open) {
+        tui_render_help(state, middle_row, 1, middle_h + lower_h, cols);
+    } else {
+        tui_render_source(state, middle_row, 1, middle_h, source_w);
+        tui_render_locals(state, middle_row, source_w, middle_h, locals_w + 1);
+        tui_render_lower(state, lower_row, 1, lower_h, cols);
+    }
+    tui_render_command(state, command_row, cols);
+
+    printf("\033[?25h");
+    fflush(stdout);
+}
+
+static char* tui_capture_command(TraceViewer *viewer, const char *command, int *quit) {
+    FILE *tmp;
+    int saved_stdout;
+    long size;
+    char *output;
+
+    *quit = 0;
+    tmp = tmpfile();
+    if (!tmp) {
+        *quit = execute_command(viewer, command);
+        return xstrdup("");
+    }
+
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdout == -1 || dup2(fileno(tmp), STDOUT_FILENO) == -1) {
+        if (saved_stdout != -1) {
+            close(saved_stdout);
+        }
+        fclose(tmp);
+        *quit = execute_command(viewer, command);
+        return xstrdup("");
+    }
+
+    *quit = execute_command(viewer, command);
+
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+
+    fseek(tmp, 0, SEEK_END);
+    size = ftell(tmp);
+    if (size < 0) {
+        size = 0;
+    }
+    rewind(tmp);
+
+    output = malloc((size_t)size + 1);
+    if (!output) {
+        fclose(tmp);
+        return NULL;
+    }
+
+    if (size > 0) {
+        fread(output, 1, (size_t)size, tmp);
+    }
+    output[size] = '\0';
+
+    fclose(tmp);
+    return output;
+}
+
+static void tui_set_status(TuiState *state, const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(state->status, sizeof(state->status), fmt, args);
+    va_end(args);
+}
+
+#define TUI_MAX_COMPLETION_MATCHES 64
+#define TUI_COMPLETION_LENGTH 256
+
+static int tui_current_token(TuiState *state, int *token_start, int *token_end, int *token_index) {
+    int p = 0;
+    int index = 0;
+
+    while (p < state->command_len) {
+        while (p < state->command_len && isspace((unsigned char)state->command[p])) {
+            p++;
+        }
+        if (p >= state->command_len) {
+            break;
+        }
+
+        int start = p;
+        while (p < state->command_len && !isspace((unsigned char)state->command[p])) {
+            p++;
+        }
+        int end = p;
+
+        if (state->command_cursor >= start && state->command_cursor <= end) {
+            *token_start = start;
+            *token_end = end;
+            *token_index = index;
+            return 1;
+        }
+
+        index++;
+    }
+
+    *token_start = state->command_cursor;
+    *token_end = state->command_cursor;
+    *token_index = index;
+    return 1;
+}
+
+static void tui_first_token(TuiState *state, char *token, size_t token_size) {
+    int p = 0;
+    int out = 0;
+
+    while (p < state->command_len && isspace((unsigned char)state->command[p])) {
+        p++;
+    }
+
+    while (p < state->command_len &&
+           !isspace((unsigned char)state->command[p]) &&
+           out < (int)token_size - 1) {
+        token[out++] = state->command[p++];
+    }
+    token[out] = '\0';
+}
+
+static int tui_collect_static_matches(const char *prefix, const char **values,
+                                      char matches[][TUI_COMPLETION_LENGTH], int max_matches) {
+    int count = 0;
+    size_t prefix_len = strlen(prefix);
+
+    for (int i = 0; values[i] && count < max_matches; i++) {
+        if (strncmp(values[i], prefix, prefix_len) == 0) {
+            strncpy(matches[count], values[i], TUI_COMPLETION_LENGTH - 1);
+            matches[count][TUI_COMPLETION_LENGTH - 1] = '\0';
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static int tui_collect_file_matches(const char *prefix,
+                                    char matches[][TUI_COMPLETION_LENGTH], int max_matches) {
+    int count = 0;
+    int state = 0;
+    char *match;
+
+    while (count < max_matches && (match = filename_generator(prefix, state)) != NULL) {
+        strncpy(matches[count], match, TUI_COMPLETION_LENGTH - 1);
+        matches[count][TUI_COMPLETION_LENGTH - 1] = '\0';
+        free(match);
+        count++;
+        state++;
+    }
+
+    return count;
+}
+
+static void tui_common_completion_prefix(char matches[][TUI_COMPLETION_LENGTH], int count,
+                                         char *common, size_t common_size) {
+    size_t common_len;
+
+    if (count <= 0 || common_size == 0) {
+        if (common_size > 0) {
+            common[0] = '\0';
+        }
+        return;
+    }
+
+    common_len = strnlen(matches[0], common_size - 1);
+    memcpy(common, matches[0], common_len);
+    common[common_len] = '\0';
+    common_len = strlen(common);
+
+    for (int i = 1; i < count; i++) {
+        size_t j = 0;
+        while (j < common_len && matches[i][j] && common[j] == matches[i][j]) {
+            j++;
+        }
+        common[j] = '\0';
+        common_len = j;
+    }
+}
+
+static void tui_show_completion_matches(TuiState *state,
+                                        char matches[][TUI_COMPLETION_LENGTH], int count) {
+    char status[512] = "matches:";
+    size_t status_len = strlen(status);
+    int shown = count < 6 ? count : 6;
+
+    for (int i = 0; i < shown; i++) {
+        tui_append_text(status, sizeof(status), &status_len, " ");
+        tui_append_text(status, sizeof(status), &status_len, matches[i]);
+    }
+    if (count > shown) {
+        tui_append_text(status, sizeof(status), &status_len, " ...");
+    }
+
+    tui_set_status(state, "%s", status);
+}
+
+static void tui_replace_command_range(TuiState *state, int start, int end,
+                                      const char *replacement, int append_space) {
+    char updated[MAX_LINE_LENGTH];
+    int replacement_len = strlen(replacement);
+    int new_len = state->command_len - (end - start) + replacement_len + append_space;
+
+    if (new_len >= MAX_LINE_LENGTH) {
+        tui_set_status(state, "completion is too long");
+        return;
+    }
+
+    memcpy(updated, state->command, start);
+    memcpy(updated + start, replacement, replacement_len);
+    if (append_space) {
+        updated[start + replacement_len] = ' ';
+    }
+    memcpy(updated + start + replacement_len + append_space,
+           state->command + end,
+           (size_t)(state->command_len - end + 1));
+
+    memcpy(state->command, updated, (size_t)new_len + 1);
+    state->command_len = new_len;
+    state->command_cursor = start + replacement_len + append_space;
+}
+
+static void tui_complete_command(TuiState *state) {
+    char first[TUI_COMPLETION_LENGTH];
+    char prefix[TUI_COMPLETION_LENGTH];
+    char matches[TUI_MAX_COMPLETION_MATCHES][TUI_COMPLETION_LENGTH];
+    char common[TUI_COMPLETION_LENGTH];
+    int token_start;
+    int token_end;
+    int token_index;
+    int prefix_len;
+    int match_count = 0;
+    int append_space = 0;
+
+    tui_current_token(state, &token_start, &token_end, &token_index);
+    prefix_len = state->command_cursor - token_start;
+    if (prefix_len < 0) {
+        prefix_len = 0;
+    }
+    if (prefix_len >= TUI_COMPLETION_LENGTH) {
+        prefix_len = TUI_COMPLETION_LENGTH - 1;
+    }
+    memcpy(prefix, state->command + token_start, (size_t)prefix_len);
+    prefix[prefix_len] = '\0';
+
+    if (token_index == 0) {
+        match_count = tui_collect_static_matches(prefix, g_commands, matches,
+                                                 TUI_MAX_COMPLETION_MATCHES);
+        append_space = 1;
+    } else {
+        tui_first_token(state, first, sizeof(first));
+        if ((strcmp(first, "show") == 0 ||
+             strcmp(first, "b") == 0 ||
+             strcmp(first, "break") == 0) &&
+            token_index == 1) {
+            match_count = tui_collect_file_matches(prefix, matches,
+                                                   TUI_MAX_COMPLETION_MATCHES);
+            append_space = 1;
+        } else if (strcmp(first, "view") == 0 && token_index == 1) {
+            match_count = tui_collect_static_matches(prefix, g_lower_views, matches,
+                                                     TUI_MAX_COMPLETION_MATCHES);
+            append_space = 0;
+        }
+    }
+
+    if (match_count == 0) {
+        tui_set_status(state, "no completions");
+        return;
+    }
+
+    tui_common_completion_prefix(matches, match_count, common, sizeof(common));
+    if (match_count == 1) {
+        tui_replace_command_range(state, token_start, token_end, matches[0], append_space);
+        tui_set_status(state, "completed %s", matches[0]);
+        return;
+    }
+
+    if (strlen(common) > strlen(prefix)) {
+        tui_replace_command_range(state, token_start, token_end, common, 0);
+    }
+    tui_show_completion_matches(state, matches, match_count);
+}
+
+static int tui_handle_view_command(TuiState *state, const char *command) {
+    if (strcmp(command, "view trace") == 0 || strcmp(command, "view backtrace") == 0) {
+        state->lower_view = TUI_LOWER_TRACE;
+    } else if (strcmp(command, "view breakpoints") == 0 || strcmp(command, "view b") == 0) {
+        state->lower_view = TUI_LOWER_BREAKPOINTS;
+    } else if (strcmp(command, "view log") == 0) {
+        state->lower_view = TUI_LOWER_LOG;
+    } else {
+        return 0;
+    }
+
+    tui_set_status(state, "lower view changed");
+    return 1;
+}
+
+static void tui_submit_command(TuiState *state) {
+    char command[MAX_LINE_LENGTH];
+    char *trimmed;
+    char *output;
+    int quit = 0;
+
+    strncpy(command, state->command, sizeof(command) - 1);
+    command[sizeof(command) - 1] = '\0';
+    trimmed = command;
+    while (isspace((unsigned char)*trimmed)) trimmed++;
+    rstrip(trimmed);
+
+    if (trimmed[0] == '\0') {
+        if (state->last_command[0] == '\0') {
+            return;
+        }
+        strncpy(command, state->last_command, sizeof(command) - 1);
+        command[sizeof(command) - 1] = '\0';
+        trimmed = command;
+    } else {
+        strncpy(state->last_command, trimmed, sizeof(state->last_command) - 1);
+        state->last_command[sizeof(state->last_command) - 1] = '\0';
+    }
+
+    tui_add_log_line(state, "");
+    char log_command[MAX_LINE_LENGTH + 4];
+    snprintf(log_command, sizeof(log_command), ": %s", trimmed);
+    tui_add_log_line(state, log_command);
+
+    if (strcmp(trimmed, "help") == 0) {
+        state->help_open = 1;
+        state->help_scroll = 0;
+        tui_set_status(state, "help opened; Esc closes, PageUp/PageDown scroll");
+    } else if (tui_handle_view_command(state, trimmed)) {
+        state->help_open = 0;
+    } else {
+        state->help_open = 0;
+        output = tui_capture_command(state->viewer, trimmed, &quit);
+        if (output) {
+            if (output[0] != '\0') {
+                tui_add_output(state, output);
+                state->lower_view = TUI_LOWER_LOG;
+            }
+            free(output);
+        }
+        tui_set_status(state, "last command: %s", trimmed);
+        if (quit) {
+            state->running = 0;
+        }
+    }
+
+    state->command[0] = '\0';
+    state->command_len = 0;
+    state->command_cursor = 0;
+}
+
+static void tui_cycle_lower_view(TuiState *state) {
+    if (state->lower_view == TUI_LOWER_LOG) {
+        state->lower_view = TUI_LOWER_TRACE;
+    } else {
+        state->lower_view++;
+    }
+    tui_set_status(state, "lower view changed");
+}
+
+static void tui_insert_char(TuiState *state, char ch) {
+    if (state->command_len >= MAX_LINE_LENGTH - 1) {
+        return;
+    }
+
+    memmove(state->command + state->command_cursor + 1,
+            state->command + state->command_cursor,
+            (size_t)(state->command_len - state->command_cursor + 1));
+    state->command[state->command_cursor] = ch;
+    state->command_len++;
+    state->command_cursor++;
+}
+
+static void tui_delete_before_cursor(TuiState *state) {
+    if (state->command_cursor <= 0) {
+        return;
+    }
+
+    memmove(state->command + state->command_cursor - 1,
+            state->command + state->command_cursor,
+            (size_t)(state->command_len - state->command_cursor + 1));
+    state->command_cursor--;
+    state->command_len--;
+}
+
+static void tui_scroll_help(TuiState *state, int delta) {
+    if (!state->help_open) {
+        return;
+    }
+
+    state->help_scroll += delta;
+    if (state->help_scroll < 0) {
+        state->help_scroll = 0;
+    }
+    tui_set_status(state, "help opened; Esc closes, PageUp/PageDown scroll");
+}
+
+static void tui_handle_escape(TuiState *state) {
+    char seq[4];
+
+    if (read(STDIN_FILENO, &seq[0], 1) != 1) {
+        if (state->help_open) {
+            state->help_open = 0;
+            tui_set_status(state, "help closed");
+        }
+        return;
+    }
+    if (read(STDIN_FILENO, &seq[1], 1) != 1) {
+        if (state->help_open) {
+            state->help_open = 0;
+            tui_set_status(state, "help closed");
+        }
+        return;
+    }
+
+    if (seq[0] == 'O' && seq[1] == 'Q') {
+        tui_cycle_lower_view(state);
+    } else if (seq[0] == '[') {
+        if (seq[1] == 'C' && state->command_cursor < state->command_len) {
+            state->command_cursor++;
+        } else if (seq[1] == 'D' && state->command_cursor > 0) {
+            state->command_cursor--;
+        } else if (seq[1] == 'A' && state->command_len == 0) {
+            if (state->help_open) {
+                tui_scroll_help(state, -1);
+            } else {
+                strncpy(state->command, "back", sizeof(state->command) - 1);
+                state->command[sizeof(state->command) - 1] = '\0';
+                state->command_len = strlen(state->command);
+                state->command_cursor = state->command_len;
+                tui_submit_command(state);
+            }
+        } else if (seq[1] == 'B' && state->command_len == 0) {
+            if (state->help_open) {
+                tui_scroll_help(state, 1);
+            } else {
+                strncpy(state->command, "n", sizeof(state->command) - 1);
+                state->command[sizeof(state->command) - 1] = '\0';
+                state->command_len = strlen(state->command);
+                state->command_cursor = state->command_len;
+                tui_submit_command(state);
+            }
+        } else if ((seq[1] == '5' || seq[1] == '6') &&
+                   read(STDIN_FILENO, &seq[2], 1) == 1 &&
+                   seq[2] == '~') {
+            tui_scroll_help(state, seq[1] == '5' ? -8 : 8);
+        } else if (seq[1] == '1' &&
+                   read(STDIN_FILENO, &seq[2], 1) == 1 &&
+                   seq[2] == '2' &&
+                   read(STDIN_FILENO, &seq[3], 1) == 1 &&
+                   seq[3] == '~') {
+            tui_cycle_lower_view(state);
+        }
+    }
+}
+
+static void run_tui_viewer(TraceViewer *viewer) {
+    TuiState state;
+
+    memset(&state, 0, sizeof(state));
+    state.viewer = viewer;
+    state.lower_view = TUI_LOWER_TRACE;
+    state.running = 1;
+    state.needs_render = 1;
+    snprintf(state.status, sizeof(state.status),
+             "Tab completes / F2 switches lower pane / help opens reference / Ctrl-C quits");
+    tui_add_log_line(&state, "traceviewer TUI ready");
+
+    if (!tui_enable_raw_mode()) {
+        fprintf(stderr, "Failed to enter raw terminal mode; falling back to readline.\n");
+        run_readline_viewer(viewer);
+        return;
+    }
+
+    g_tui_mode = 1;
+    printf("\033[?1049h");
+
+    while (state.running) {
+        char ch;
+
+        if (state.needs_render) {
+            tui_render(&state);
+            state.needs_render = 0;
+        }
+        if (read(STDIN_FILENO, &ch, 1) != 1) {
+            continue;
+        }
+
+        if (ch == 3 || ch == 4) {
+            state.running = 0;
+        } else if (ch == '\r' || ch == '\n') {
+            tui_submit_command(&state);
+        } else if (ch == 127 || ch == 8) {
+            tui_delete_before_cursor(&state);
+        } else if (ch == '\t') {
+            tui_complete_command(&state);
+        } else if (ch == 27) {
+            tui_handle_escape(&state);
+        } else if (isprint((unsigned char)ch)) {
+            tui_insert_char(&state, ch);
+        }
+        state.needs_render = 1;
+    }
+
+    printf("\033[?1049l\033[?25h\033[0m");
+    fflush(stdout);
+    tui_disable_raw_mode();
+    g_tui_mode = 0;
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <trace_file>\n", argv[0]);
@@ -1490,313 +3136,14 @@ int main(int argc, char *argv[]) {
     
     // Set global pointer for autocomplete access
     g_viewer = &viewer;
-    
-    // Initialize readline for command history and tab completion
-    init_readline();
-    
-    print_help();
-    
-    printf("\n\033[1;32m✓ Tab completion enabled\033[0m (press TAB to autocomplete commands and .py files)\n");
-    
-    // Print first entry
-    print_current_entry(&viewer);
 
-    char *last_command = NULL;
-    while (1) {
-        char input[MAX_LINE_LENGTH];
-        char *cmd;
-        
-        // Build prompt with user-friendly 1-based position
-        char prompt[64];
-        snprintf(prompt, sizeof(prompt), "\n\033[1;32m[%d/%d]\033[0m > ", 
-                 viewer.current_entry + 1, viewer.entry_count);
-        
-        // Use readline for better line editing and history
-        char *line = readline(prompt);
-        
-        // Check for EOF (Ctrl+D)
-        if (!line) {
-            printf("\n");
-            break;
-        }
-        
-        // Trim whitespace
-        cmd = line;
-        while (isspace((unsigned char)*cmd)) cmd++;
-        
-        // Handle empty input - repeat last command
-        if (strlen(cmd) == 0) {
-            free(line);
-            if (last_command) {
-                cmd = last_command;
-                // Note: don't add to history again
-            } else {
-                continue;
-            }
-        } else {
-            // Add non-empty command to history
-            add_history(line);
-            
-            // Update last command
-            if (last_command) {
-                free(last_command);
-            }
-            last_command = strdup(cmd);
-        }
-        
-        // Copy command to input buffer for processing
-        strncpy(input, cmd, MAX_LINE_LENGTH - 1);
-        input[MAX_LINE_LENGTH - 1] = '\0';
-        
-        // Free the readline buffer (but not last_command if we're using it)
-        if (cmd == line) {
-            free(line);
-        }
-        
-        // Point cmd to input buffer for command processing
-        cmd = input;
-        while (isspace((unsigned char)*cmd)) cmd++;
-
-        // Handle 'n' command (next)
-        if (strcmp(cmd, "n") == 0) {
-            if (viewer.current_entry < viewer.entry_count - 1) {
-                viewer.current_entry++;
-                print_current_entry(&viewer);
-            } else {
-                printf("\033[1;31m✗ Already at last execution step\033[0m\n");
-            }
-        }
-        // Handle 'back' command (previous)
-        else if (strcmp(cmd, "back") == 0) {
-            if (viewer.current_entry > 0) {
-                viewer.current_entry--;
-                print_current_entry(&viewer);
-            } else {
-                printf("\033[1;31m✗ Already at first execution step\033[0m\n");
-            }
-        }
-        // Handle 'summary' command
-        else if (strcmp(cmd, "summary") == 0) {
-            print_summary(&viewer);
-        }
-        // Handle 'show' command (with optional filename)
-        else if (strncmp(cmd, "show", 4) == 0) {
-            if (cmd[4] == '\0') {
-                // Just 'show' - show current file
-                show_file(&viewer, NULL);
-            } else if (cmd[4] == ' ') {
-                // 'show <filename>' - show specific file
-                char *filename = cmd + 5;
-                while (isspace((unsigned char)*filename)) filename++;
-                
-                if (strlen(filename) > 0) {
-                    show_file(&viewer, filename);
-                } else {
-                    show_file(&viewer, NULL);
-                }
-            } else {
-                show_file(&viewer, NULL);
-            }
-        }
-        // Handle 'help' command
-        else if (strcmp(cmd, "help") == 0) {
-            print_help();
-        }
-        // Handle ':<number>' command (jump to execution)
-        else if (cmd[0] == ':') {
-            long user_num = atol(cmd + 1);
-            // Convert from 1-based user input to 0-based internal execution order
-            long exec_num = user_num - 1;
-            int found = 0;
-            
-            // Validate range (user sees 1 to N, we search for 0 to N-1)
-            if (user_num < 1 || user_num > viewer.entry_count) {
-                printf("\033[1;31m✗ Execution #%ld out of range. Valid range: 1-%d\033[0m\n", 
-                       user_num, viewer.entry_count);
-            } else {
-                for (int i = 0; i < viewer.entry_count; i++) {
-                    if (viewer.entries[i].exec_order == exec_num) {
-                        viewer.current_entry = i;
-                        print_current_entry(&viewer);
-                        found = 1;
-                        break;
-                    }
-                }
-                
-                if (!found) {
-                    printf("\033[1;31m✗ Execution #%ld not found in trace\033[0m\n", user_num);
-                }
-            }
-        }
-        // Handle 'find <var>' command
-        else if (strncmp(cmd, "find ", 5) == 0) {
-            char *var_name = cmd + 5;
-            while (isspace((unsigned char)*var_name)) var_name++;
-            if (strlen(var_name) > 0) {
-                search_variable(&viewer, var_name);
-            } else {
-                printf("\033[1;31m✗ Usage: find <variable_name>\033[0m\n");
-            }
-        }
-        // Handle 'b <file> <line>' command (set breakpoint)
-        else if (cmd[0] == 'b' && (cmd[1] == ' ' || cmd[1] == '\0')) {
-            if (cmd[1] == '\0') {
-                // Just 'b' - list breakpoints
-                list_breakpoints(&viewer);
-            } else {
-                // 'b <file> <line>' - set breakpoint
-                char *args = cmd + 2;
-                while (isspace((unsigned char)*args)) args++;
-                
-                char filename[512];
-                int line_num;
-                
-                if (sscanf(args, "%s %d", filename, &line_num) == 2) {
-                    add_breakpoint(&viewer, filename, line_num);
-                } else {
-                    printf("\033[1;31m✗ Usage: b <file> <line>\033[0m\n");
-                    printf("Example: b test.py 25\n");
-                }
-            }
-        }
-        // Handle 'list' command (list breakpoints)
-        else if (strcmp(cmd, "list") == 0) {
-            list_breakpoints(&viewer);
-        }
-        // Handle 'c' command (continue to next breakpoint)
-        else if (strcmp(cmd, "c") == 0) {
-            continue_to_breakpoint(&viewer);
-        }
-        // Handle 'rc' command (reverse continue to previous breakpoint)
-        else if (strcmp(cmd, "rc") == 0) {
-            reverse_continue_to_breakpoint(&viewer);
-        }
-        // Handle 'jump <line>' command (jump to source line - old 'break' behavior)
-        else if (strncmp(cmd, "jump ", 5) == 0) {
-            int line_num = atoi(cmd + 5);
-            int found = 0;
-            
-            printf("\nSearching for line %d...\n\n", line_num);
-            for (int i = 0; i < viewer.entry_count; i++) {
-                if (viewer.entries[i].line_number == line_num) {
-                    viewer.current_entry = i;
-                    print_current_entry(&viewer);
-                    found = 1;
-                    break;
-                }
-            }
-            
-            if (!found) {
-                printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
-            }
-        }
-        // Handle old 'break <line>' command (redirect to 'jump')
-        else if (strncmp(cmd, "break ", 6) == 0) {
-            int line_num = atoi(cmd + 6);
-            int found = 0;
-            
-            printf("\n\033[1;33mNote: 'break <line>' is deprecated. Use 'jump <line>' or 'b <file> <line>'\033[0m\n");
-            printf("Searching for line %d...\n\n", line_num);
-            for (int i = 0; i < viewer.entry_count; i++) {
-                if (viewer.entries[i].line_number == line_num) {
-                    viewer.current_entry = i;
-                    print_current_entry(&viewer);
-                    found = 1;
-                    break;
-                }
-            }
-            
-            if (!found) {
-                printf("\033[1;31m✗ Line %d not found in trace\033[0m\n", line_num);
-            }
-        }
-        // Handle 'w <var>' command (set watchpoint - both read and write)
-        else if (cmd[0] == 'w' && (cmd[1] == ' ' || cmd[1] == '\0')) {
-            if (cmd[1] == '\0') {
-                printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
-                printf("Example: w counter\n");
-            } else {
-                char *var_name = cmd + 2;
-                while (isspace((unsigned char)*var_name)) var_name++;
-                if (strlen(var_name) > 0) {
-                    add_watchpoint(&viewer, var_name, WATCHPOINT_BOTH);
-                } else {
-                    printf("\033[1;31m✗ Usage: w <variable>\033[0m\n");
-                }
-            }
-        }
-        // Handle 'rw <var>' command (set read watchpoint)
-        else if (strncmp(cmd, "rw ", 3) == 0) {
-            char *var_name = cmd + 3;
-            while (isspace((unsigned char)*var_name)) var_name++;
-            if (strlen(var_name) > 0) {
-                add_watchpoint(&viewer, var_name, WATCHPOINT_READ);
-            } else {
-                printf("\033[1;31m✗ Usage: rw <variable>\033[0m\n");
-                printf("Example: rw counter\n");
-            }
-        }
-        // Handle 'ww <var>' command (set write watchpoint)
-        else if (strncmp(cmd, "ww ", 3) == 0) {
-            char *var_name = cmd + 3;
-            while (isspace((unsigned char)*var_name)) var_name++;
-            if (strlen(var_name) > 0) {
-                add_watchpoint(&viewer, var_name, WATCHPOINT_WRITE);
-            } else {
-                printf("\033[1;31m✗ Usage: ww <variable>\033[0m\n");
-                printf("Example: ww counter\n");
-            }
-        }
-        // Handle 'listw' command (list watchpoints)
-        else if (strcmp(cmd, "listw") == 0) {
-            list_watchpoints(&viewer);
-        }
-        // Handle 'clearw [num]' command (clear watchpoint(s))
-        else if (strncmp(cmd, "clearw", 6) == 0) {
-            if (cmd[6] == '\0') {
-                // Clear all watchpoints
-                clear_watchpoint(&viewer, -1);
-            } else if (cmd[6] == ' ') {
-                // Clear specific watchpoint
-                int wp_num = atoi(cmd + 7);
-                if (wp_num > 0 && wp_num <= viewer.watchpoint_count) {
-                    clear_watchpoint(&viewer, wp_num - 1);
-                } else {
-                    printf("\033[1;31m✗ Invalid watchpoint number. Use 'listw' to see watchpoints.\033[0m\n");
-                }
-            }
-        }
-        // Handle 'q' or 'quit' command
-        else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
-            unlink("trace_eval_temp.py");
-            break;
-        }
-        // Eval
-        else if (strncmp(cmd, "eval ", 5) == 0) {
-            char *expression = cmd + 5;
-            while (isspace((unsigned char)*expression)) expression++;
-            if (strlen(expression) > 0) {
-                eval_expression(&viewer, expression);
-            } else {
-                printf("\033[1;31m✗ Usage: eval <expression>\033[0m\n");
-                printf("Example: eval x + y\n");
-                printf("Example: eval len(my_list)\n");
-            }
-        }
-        else {
-            printf("\033[1;31m✗ Unknown command. Type 'help' for available commands\033[0m\n");
-        }
-    }
-
-    // Save command history
-    save_readline_history();
-    
-    // Free last command
-    if (last_command) {
-        free(last_command);
+    if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) {
+        run_tui_viewer(&viewer);
+    } else {
+        run_readline_viewer(&viewer);
     }
     
     cleanup(&viewer);
-    printf("\n\033[1;36mGoodbye! Happy debugging! 🐛\033[0m\n\n");
+    printf("\n\033[1;36mGoodbye.\033[0m\n\n");
     return 0;
 }

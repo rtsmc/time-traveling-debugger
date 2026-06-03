@@ -52,17 +52,39 @@ is_runtime_name(const char *var_name)
            strcmp(var_name, "__spec__") == 0 ||
            strcmp(var_name, "__file__") == 0 ||
            strcmp(var_name, "__cached__") == 0 ||
-           strcmp(var_name, "__annotations__") == 0;
+           strcmp(var_name, "__annotations__") == 0 ||
+           strcmp(var_name, "__module__") == 0 ||
+           strcmp(var_name, "__qualname__") == 0;
 }
 
 static int
-should_skip_variable(const char *var_name, PyObject *value)
+is_import_or_definition_value(PyObject *value)
+{
+    return PyModule_Check(value) || PyFunction_Check(value) || PyType_Check(value);
+}
+
+static int
+should_skip_global_variable(const char *var_name, PyObject *value)
 {
     if (is_runtime_name(var_name)) {
         return 1;
     }
 
-    return PyModule_Check(value) || PyFunction_Check(value) || PyType_Check(value);
+    return is_import_or_definition_value(value);
+}
+
+static int
+should_skip_local_variable(const char *var_name, PyObject *value, int locals_are_globals)
+{
+    if (is_runtime_name(var_name)) {
+        return 1;
+    }
+
+    if (locals_are_globals) {
+        return is_import_or_definition_value(value);
+    }
+
+    return 0;
 }
 
 static void
@@ -318,7 +340,7 @@ static Breakpoint* check_breakpoint(const char *filename, int lineno) {
 
 // Helper function to write variable values to file
 static int
-write_variables(FILE *fp, PyObject *locals)
+write_variables(FILE *fp, PyObject *locals, int locals_are_globals)
 {
     int first = 1;
     if (locals == NULL || !PyDict_Check(locals)) {
@@ -335,7 +357,7 @@ write_variables(FILE *fp, PyObject *locals)
             continue;
         }
 
-        if (should_skip_variable(var_name, value)) {
+        if (should_skip_local_variable(var_name, value, locals_are_globals)) {
             continue;
         }
 
@@ -367,7 +389,7 @@ write_globals(FILE *fp, PyObject *globals, PyObject *locals, int first)
             continue;
         }
 
-        if (should_skip_variable(var_name, value)) {
+        if (should_skip_global_variable(var_name, value)) {
             continue;
         }
 
@@ -620,11 +642,13 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
         Py_INCREF(globals);
     }
 
+    int locals_are_globals = locals == globals;
+
     // Write to trace file with properly initialized locals
     fprintf(trace_file, "%ld|||%s|||%d|||%s|||",
         execution_counter++, filename, lineno, source_line);
 
-    int has_locals = write_variables(trace_file, locals);
+    int has_locals = write_variables(trace_file, locals, locals_are_globals);
     write_globals(trace_file, globals, locals, has_locals);
     fprintf(trace_file, "\n");
     fflush(trace_file);
@@ -643,7 +667,7 @@ trace_callback(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
                 PyErr_Clear();
                 continue;
             }
-            if (should_skip_variable(var_name, value)) {
+            if (should_skip_local_variable(var_name, value, locals_are_globals)) {
                 continue;
             }
 
