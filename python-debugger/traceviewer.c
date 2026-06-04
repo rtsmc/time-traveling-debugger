@@ -17,7 +17,9 @@
 #include <readline/history.h>
 #define HAS_READLINE 1
 
-#define MAX_LINE_LENGTH 4096
+
+
+#define MAX_LINE_LENGTH 10000
 #define MAX_LINES 100000
 #define MAX_BREAKPOINTS 100
 #define MAX_WATCHPOINTS 50

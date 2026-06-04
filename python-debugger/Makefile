@@ -30,6 +30,7 @@ all: check-deps
 	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════╝$(RESET)"
 	@echo -e ""
 	@$(MAKE) -s traceviewer
+	@$(MAKE) -s cdebugger
 	@echo -e ""
 	@$(MAKE) -s verify
 	@echo -e ""
@@ -84,6 +85,23 @@ traceviewer: traceviewer.c
 		exit 1; \
 	fi
 
+PYTHON_INCLUDES    := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYTHON_EXT_SUFFIX  := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+CDEBUGGER_SO       = cdebugger$(PYTHON_EXT_SUFFIX)
+
+cdebugger: debugger.c
+	@echo -e "$(CYAN)Building cdebugger extension...$(RESET)"
+	$(CC) -shared -fPIC -O2 \
+		-I$(PYTHON_INCLUDES) \
+		-o $(CDEBUGGER_SO) \
+		debugger.c
+	@if [ -f $(CDEBUGGER_SO) ]; then \
+		echo -e "$(GREEN)✓ cdebugger built: $(CDEBUGGER_SO)$(RESET)"; \
+	else \
+		echo -e "$(RED)✗ Failed to build cdebugger$(RESET)"; \
+		exit 1; \
+	fi
+
 # Verify build
 verify:
 	@echo -e "$(CYAN)Verifying build...$(RESET)"
@@ -116,6 +134,7 @@ verify:
 clean:
 	@echo -e "$(CYAN)Cleaning build files...$(RESET)"
 	@rm -rf build/
+	@rm -f cdebugger*.so
 	@echo -e "$(GREEN)✓ Clean complete$(RESET)"
 
 # Build everything from scratch
