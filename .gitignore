@@ -58,3 +58,5 @@ dkms.conf
 **/*egg-info*/
 **/*__pycache__*/
 **/.clangd
+**/.codex
+**/trace.log

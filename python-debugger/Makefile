@@ -161,7 +161,7 @@ test: all
 	@echo -e ""
 	@if [ -f trace.log ]; then \
 		echo -e "Test 3: Testing show command..."; \
-		if echo -e -e "show\nq" | ./traceviewer trace.log 2>&1 | grep -q "File:"; then \
+		if echo -e -e "show\nq" | build/traceviewer trace.log 2>&1 | grep -q "File:"; then \
 			echo -e "  $(GREEN)✓$(RESET) Show command works"; \
 		else \
 			echo -e "  $(RED)✗$(RESET) Show command failed"; \
